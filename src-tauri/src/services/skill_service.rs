@@ -96,6 +96,19 @@ impl SyncMethod {
     }
 }
 
+/// `inspect_destination` 的调用场景：决定悬空 symlink / 普通文件如何分类。
+/// 区别的动机是数据安全：卸载与重部署不能因为"看起来能覆盖"就删掉用户文件。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum DestCheckMode {
+    /// 安装/建链场景：悬空 symlink 与普通文件都视为可安全覆盖（Ok(None)），
+    /// 由调用方备份旧值后移除再建新链接
+    Install,
+    /// 重部署场景：悬空 symlink（无数据风险）可安全覆盖；普通文件仍按外来内容拒绝
+    Redeploy,
+    /// 卸载场景：悬空 symlink 与普通文件一律按外来内容 Err 拒绝，绝不删用户文件
+    Uninstall,
+}
+
 /// SKILL.md frontmatter 元数据
 #[derive(Debug, Default, serde::Deserialize)]
 pub struct SkillMetadata {
@@ -121,8 +134,8 @@ impl SkillService {
     /// 中央技能库目录（settings.library_path 覆盖，支持 ~；默认 ~/.skilldock/skills）
     pub fn get_library_dir(db: &Database) -> Result<PathBuf> {
         let dir = match db.get_setting("library_path")? {
-            Some(raw) if !raw.trim().is_empty() => config::expand_tilde(&raw),
-            _ => config::get_default_library_dir(),
+            Some(raw) if !raw.trim().is_empty() => config::expand_tilde(&raw)?,
+            _ => config::get_default_library_dir()?,
         };
         fs::create_dir_all(&dir).with_context(|| format!("创建技能库目录失败: {}", dir.display()))?;
         Ok(dir)
@@ -162,7 +175,10 @@ impl SkillService {
         has_component.then_some(normalized)
     }
 
-    /// 校验并规范化安装目录名（最终落盘目录名，仅单段）
+    /// 校验并规范化安装目录名（最终落盘目录名，仅单段）。
+    /// 拒绝：路径分隔符、隐藏名、尾点/尾空格、Windows 非法字符（`<>:"|?*` 及控制字符）、
+    /// Windows 保留名（CON/PRN/AUX/NUL/COM1-9/LPT1-9，大小写不敏感，含 con.txt 带扩展名形式）、
+    /// 超过 255 字节的组件。
     pub fn sanitize_install_name(raw: &str) -> Option<String> {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
@@ -176,16 +192,41 @@ impl SkillService {
         let mut components = path.components();
         match (components.next(), components.next()) {
             (Some(Component::Normal(name)), None) => {
-                let normalized = name.to_string_lossy().trim().to_string();
+                let raw_name = name.to_string_lossy();
+                // Windows 会静默剥离尾点/尾空格，落盘名与声明名不一致，直接拒绝
+                if raw_name.ends_with('.') || raw_name.ends_with(char::is_whitespace) {
+                    return None;
+                }
+                let normalized = raw_name.trim().to_string();
                 if normalized.is_empty()
                     || normalized == "."
                     || normalized == ".."
                     || normalized.starts_with('.')
                 {
-                    None
-                } else {
-                    Some(normalized)
+                    return None;
                 }
+                // NTFS 单组件上限 255 字节
+                if normalized.len() > 255 {
+                    return None;
+                }
+                if normalized
+                    .chars()
+                    .any(|c| c.is_ascii_control() || "<>:\"|?*".contains(c))
+                {
+                    return None;
+                }
+                // Windows 保留设备名：取首个 `.` 前的词干判断（con.txt 同样不可创建）
+                let stem = normalized.split('.').next().unwrap_or(&normalized);
+                let upper = stem.to_ascii_uppercase();
+                if matches!(
+                    upper.as_str(),
+                    "CON" | "PRN" | "AUX" | "NUL" | "COM1" | "COM2" | "COM3" | "COM4" | "COM5"
+                        | "COM6" | "COM7" | "COM8" | "COM9" | "LPT1" | "LPT2" | "LPT3" | "LPT4"
+                        | "LPT5" | "LPT6" | "LPT7" | "LPT8" | "LPT9"
+                ) {
+                    return None;
+                }
+                Some(normalized)
             }
             _ => None,
         }
@@ -230,6 +271,10 @@ impl SkillService {
         if branch.starts_with('/') || branch.ends_with('/') || branch.contains("//") {
             return false;
         }
+        // git 引用规则：不允许连续两点（防 range 语法歧义）
+        if branch.contains("..") {
+            return false;
+        }
         if branch.contains("@{") {
             return false;
         }
@@ -244,6 +289,8 @@ impl SkillService {
                 && !segment.starts_with('.')
                 && !segment.ends_with('.')
                 && !segment.ends_with(".lock")
+                // 前导连字符会被 option 解析吞掉
+                && !segment.starts_with('-')
         })
     }
 
@@ -285,12 +332,13 @@ impl SkillService {
 
     // ========== 内容哈希 ==========
 
-    /// 计算目录内容 SHA-256：非隐藏文件按相对路径排序，"路径\0内容\0" 逐文件 feed
+    /// 计算目录内容 SHA-256：非隐藏文件按相对路径排序，"路径\0内容\0" 逐文件 feed。
+    /// 符号链接一律跳过（不跟随）；目录深度 / 文件数超限返回 Err 而非 partial hash
     pub fn compute_dir_hash(dir: &Path) -> Result<String> {
         use sha2::{Digest, Sha256};
 
         let mut files: Vec<PathBuf> = Vec::new();
-        Self::collect_files_for_hash(dir, dir, &mut files)?;
+        Self::collect_files_for_hash(dir, dir, 0, &mut files)?;
         files.sort();
 
         let mut hasher = Sha256::new();
@@ -308,9 +356,23 @@ impl SkillService {
         Ok(format!("{:x}", hasher.finalize()))
     }
 
-    /// 递归收集目录下所有非隐藏文件
+    /// 递归收集目录下所有非隐藏文件（symlink 不跟随，深度/数量超限报错）
     #[allow(clippy::only_used_in_recursion)]
-    fn collect_files_for_hash(base: &Path, current: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+    fn collect_files_for_hash(
+        base: &Path,
+        current: &Path,
+        depth: usize,
+        files: &mut Vec<PathBuf>,
+    ) -> Result<()> {
+        const MAX_HASH_DEPTH: usize = 32;
+        const MAX_HASH_FILES: usize = 100_000;
+
+        if depth > MAX_HASH_DEPTH {
+            return Err(anyhow!(
+                "目录嵌套超过 {MAX_HASH_DEPTH} 层，拒绝计算哈希: {}",
+                current.display()
+            ));
+        }
         let entries =
             fs::read_dir(current).with_context(|| format!("读取目录失败: {}", current.display()))?;
         for entry in entries {
@@ -319,11 +381,22 @@ impl SkillService {
             if name.starts_with('.') {
                 continue;
             }
+            // file_type 不跟随链接：symlink 一律跳过，避免环状链接导致无限递归
+            let file_type = entry.file_type()?;
+            if file_type.is_symlink() {
+                continue;
+            }
             let path = entry.path();
-            if path.is_dir() {
-                Self::collect_files_for_hash(base, &path, files)?;
+            if file_type.is_dir() {
+                Self::collect_files_for_hash(base, &path, depth + 1, files)?;
             } else {
                 files.push(path);
+                if files.len() > MAX_HASH_FILES {
+                    return Err(anyhow!(
+                        "目录文件数超过 {MAX_HASH_FILES}，拒绝计算哈希: {}",
+                        base.display()
+                    ));
+                }
             }
         }
         Ok(())
@@ -666,7 +739,18 @@ impl SkillService {
             #[cfg(unix)]
             fs::remove_file(path)?;
             #[cfg(windows)]
-            fs::remove_dir(path)?; // Windows 的目录 symlink 需要用 remove_dir
+            {
+                // Windows 的目录 symlink 需要用 remove_dir，文件 symlink 需要用 remove_file；
+                // 悬空链接无法靠目标类型区分，先按目录删，失败再按文件删
+                if let Err(dir_err) = fs::remove_dir(path) {
+                    fs::remove_file(path).map_err(|file_err| {
+                        anyhow!(
+                            "删除符号链接失败: {}（remove_dir: {dir_err}；remove_file: {file_err}）",
+                            path.display()
+                        )
+                    })?;
+                }
+            }
         } else if path.is_dir() {
             fs::remove_dir_all(path)?;
         } else if path.exists() {
@@ -868,9 +952,17 @@ impl SkillService {
         )
     }
 
+    /// `inspect_destination` 的调用场景分类见模块级 `DestCheckMode`。
     /// 目标归属检查：symlink 解析后指向 source，或目录内容与 source 哈希相同 → Ok(Some)；
-    /// 目标不存在 → Ok(None)；同名外来内容 → Err（拒绝覆盖）
-    fn inspect_destination(source: &Path, destination: &Path, directory: &str) -> Result<Option<()>> {
+    /// 目标不存在 → Ok(None)；同名外来内容 → Err（拒绝覆盖）。
+    /// 悬空 symlink 无数据损失风险，Install/Redeploy 归为可安全覆盖（Ok(None)）；
+    /// 普通文件仅 Install 归为可安全覆盖；Uninstall 场景两者都归为外来内容（Err）。
+    fn inspect_destination(
+        source: &Path,
+        destination: &Path,
+        directory: &str,
+        mode: DestCheckMode,
+    ) -> Result<Option<()>> {
         if !destination.exists() && !Self::is_symlink(destination) {
             return Ok(None);
         }
@@ -891,6 +983,10 @@ impl SkillService {
             ) {
                 return Ok(Some(()));
             }
+            // 悬空 symlink：目标不存在、无数据损失风险，安装/重部署场景可安全覆盖
+            if resolved.canonicalize().is_err() && !matches!(mode, DestCheckMode::Uninstall) {
+                return Ok(None);
+            }
         } else if destination.is_dir() {
             if let (Ok(dest_hash), Ok(source_hash)) = (
                 Self::compute_dir_hash(destination),
@@ -900,11 +996,19 @@ impl SkillService {
                     return Ok(Some(()));
                 }
             }
+        } else if matches!(mode, DestCheckMode::Install) {
+            // 普通文件：仅安装场景可安全覆盖（旧值由调用方备份后移除）
+            return Ok(None);
         }
 
-        Err(anyhow!(
-            "目标位置已存在同名但内容不同的 Skill，拒绝覆盖或删除: {directory}"
-        ))
+        Err(anyhow!(format_skill_error(
+            "SKILL_DEST_CONFLICT",
+            &[
+                ("path", directory),
+                ("target", &destination.display().to_string()),
+            ],
+            Some("removeConflict"),
+        )))
     }
 
     // ========== 元数据 ==========
@@ -1015,13 +1119,16 @@ impl SkillService {
         Ok(())
     }
 
-    /// 在目录树中查找名称匹配且包含 SKILL.md 的子目录（≤3 层）
-    fn find_skill_dir_by_name(root: &Path, target_name: &str) -> Option<PathBuf> {
-        fn walk(dir: &Path, target: &str, depth: usize) -> Option<PathBuf> {
+    /// 在目录树中查找名称匹配且包含 SKILL.md 的子目录（≤3 层，忽略大小写）。
+    /// 唯一匹配 → Ok(Some)；无匹配 → Ok(None)；多个匹配 → Err（拒绝歧义兜底）
+    fn find_skill_dir_by_name(root: &Path, target_name: &str) -> Result<Option<PathBuf>> {
+        fn walk(dir: &Path, target: &str, depth: usize, matches: &mut Vec<PathBuf>) {
             if depth > 3 {
-                return None;
+                return;
             }
-            let entries = fs::read_dir(dir).ok()?;
+            let Ok(entries) = fs::read_dir(dir) else {
+                return;
+            };
             for entry in entries.flatten() {
                 let path = entry.path();
                 if !path.is_dir() {
@@ -1033,37 +1140,54 @@ impl SkillService {
                     continue;
                 }
                 if name_str.eq_ignore_ascii_case(target) && path.join("SKILL.md").exists() {
-                    return Some(path);
+                    matches.push(path.clone());
                 }
-                if let Some(found) = walk(&path, target, depth + 1) {
-                    return Some(found);
-                }
+                walk(&path, target, depth + 1, matches);
             }
-            None
         }
-        walk(root, target_name, 0)
+        let mut matches = Vec::new();
+        walk(root, target_name, 0, &mut matches);
+        match matches.len() {
+            0 => Ok(None),
+            1 => Ok(matches.into_iter().next()),
+            _ => {
+                let candidates = matches
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                Err(anyhow!(format_skill_error(
+                    "SKILL_DIR_AMBIGUOUS",
+                    &[("directory", target_name), ("candidates", &candidates)],
+                    Some("checkRepoUrl"),
+                )))
+            }
+        }
     }
 
     /// 将目录信息解析为解压目录中的真实源目录（返回目录必含 SKILL.md）：
-    /// 1. 直接相对路径命中；2. 按末段名递归查找；3. 仓库根兜底
-    pub fn resolve_skill_source_dir(root: &Path, raw_directory: &str) -> Option<PathBuf> {
-        let source_rel = Self::sanitize_skill_source_path(raw_directory)?;
-        let install_name = source_rel
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())?;
+    /// 1. 直接相对路径命中；2. 按末段名递归查找（多匹配报歧义错误）；3. 仓库根兜底
+    pub fn resolve_skill_source_dir(root: &Path, raw_directory: &str) -> Result<Option<PathBuf>> {
+        let Some(source_rel) = Self::sanitize_skill_source_path(raw_directory) else {
+            return Ok(None);
+        };
+        let Some(install_name) = source_rel.file_name().map(|n| n.to_string_lossy().to_string())
+        else {
+            return Ok(None);
+        };
 
         let direct = root.join(&source_rel);
         if direct.is_dir() && direct.join("SKILL.md").is_file() {
-            return Some(direct);
+            return Ok(Some(direct));
         }
 
-        if let Some(found) = Self::find_skill_dir_by_name(root, &install_name) {
+        if let Some(found) = Self::find_skill_dir_by_name(root, &install_name)? {
             log::info!(
                 "Skill directory '{}' not found at direct path, using fallback: {}",
                 install_name,
                 found.display()
             );
-            return Some(found);
+            return Ok(Some(found));
         }
 
         if root.join("SKILL.md").is_file() {
@@ -1071,10 +1195,10 @@ impl SkillService {
                 "Skill directory '{}' not found, but SKILL.md exists at root, using repo root",
                 install_name
             );
-            return Some(root.to_path_buf());
+            return Ok(Some(root.to_path_buf()));
         }
 
-        None
+        Ok(None)
     }
 }
 
@@ -1099,7 +1223,7 @@ impl SkillService {
     }
 
     /// 工具的技能根目录（current_path 展开 ~）
-    fn tool_root(tool: &ToolAdapter) -> PathBuf {
+    fn tool_root(tool: &ToolAdapter) -> Result<PathBuf> {
         config::expand_tilde(&tool.current_path)
     }
 
@@ -1119,7 +1243,7 @@ impl SkillService {
         let source = Self::skill_storage_dir(db, record)?;
         Self::validate_sync_source_dir(&source, &directory)?;
 
-        let tool_root = Self::tool_root(tool);
+        let tool_root = Self::tool_root(tool)?;
         fs::create_dir_all(&tool_root)
             .with_context(|| format!("创建工具技能目录失败: {}", tool_root.display()))?;
         let dest = tool_root.join(&directory);
@@ -1167,7 +1291,7 @@ impl SkillService {
     /// 从工具目录移除技能（容错删除 symlink 或真实目录）
     pub fn remove_from_tool(db: &Database, record: &SkillRecord, tool: &ToolAdapter) -> Result<()> {
         let directory = Self::require_valid_directory(&record.directory)?;
-        let dest = Self::tool_root(tool).join(&directory);
+        let dest = Self::tool_root(tool)?.join(&directory);
         // 工具目录与技能库同源/重叠时跳过（否则会删掉库内源目录）
         if let Ok(source) = Self::skill_storage_dir(db, record) {
             if Self::paths_overlap(&source, &dest) {
@@ -1320,14 +1444,15 @@ impl SkillService {
         let (temp_guard, used_branch) = github::download_repo_with_timeout(&repo).await?;
         let temp_dir = temp_guard.path();
 
-        let source = Self::resolve_skill_source_dir(temp_dir, &directory).ok_or_else(|| {
-            let missing = temp_dir.join(&source_rel).display().to_string();
-            anyhow!(format_skill_error(
-                "SKILL_DIR_NOT_FOUND",
-                &[("path", &missing)],
-                Some("checkRepoUrl"),
-            ))
-        })?;
+        let source = Self::resolve_skill_source_dir(temp_dir, &directory)?
+            .ok_or_else(|| {
+                let missing = temp_dir.join(&source_rel).display().to_string();
+                anyhow!(format_skill_error(
+                    "SKILL_DIR_NOT_FOUND",
+                    &[("path", &missing)],
+                    Some("checkRepoUrl"),
+                ))
+            })?;
         let canonical_temp = temp_dir
             .canonicalize()
             .unwrap_or_else(|_| temp_dir.to_path_buf());
@@ -1548,7 +1673,7 @@ impl SkillService {
 
         let (temp_guard, used_branch) = github::download_repo_with_timeout(repo).await?;
         let temp_dir = temp_guard.path();
-        let source = Self::resolve_skill_source_dir(temp_dir, directory).ok_or_else(|| {
+        let source = Self::resolve_skill_source_dir(temp_dir, directory)?.ok_or_else(|| {
             anyhow!(format_skill_error(
                 "SKILL_DIR_NOT_FOUND",
                 &[("path", &temp_dir.join(directory).display().to_string())],
@@ -1730,22 +1855,59 @@ impl SkillService {
         fs::create_dir_all(&project_skills_dir)?;
         Self::copy_dir_recursive(source, &dest)?;
 
-        // 建链接；同名外来内容拒绝覆盖，同内容副本/已指向 dest 的链接保留
+        // 建链接；同名外来内容拒绝覆盖，同内容副本/已指向 dest 的链接保留；
+        // 悬空 symlink/普通文件视为可安全覆盖：旧值先备份到旁路，DB 落库成功后再删备份，
+        // 任一环节失败则还原旧值，避免毁掉用户留下的文件
         let mut link_created = false;
+        let mut link_backup: Option<PathBuf> = None;
         let link_result: Result<()> = (|| {
             fs::create_dir_all(&linked_dir)?;
-            if Self::inspect_destination(&dest, &linked_dest, install_name)?.is_none() {
-                match SyncMethod::from_str(&meta.deploy_method) {
-                    SyncMethod::Symlink => Self::create_symlink(&dest, &linked_dest)?,
-                    SyncMethod::Copy => Self::copy_dir_recursive(&dest, &linked_dest)?,
-                    SyncMethod::Auto => {
-                        if let Err(err) = Self::create_symlink(&dest, &linked_dest) {
-                            log::warn!("项目技能 symlink 失败，回退为复制: {err}");
-                            Self::copy_dir_recursive(&dest, &linked_dest)?;
+            if Self::inspect_destination(&dest, &linked_dest, install_name, DestCheckMode::Install)?
+                .is_none()
+            {
+                if linked_dest.symlink_metadata().is_ok() {
+                    let backup = linked_dir.join(format!("{install_name}.skilldock-old"));
+                    Self::cleanup_staging(&backup);
+                    fs::rename(&linked_dest, &backup).map_err(|e| {
+                        anyhow!(
+                            "备份目标位置的旧内容失败: {} -> {}: {e}",
+                            linked_dest.display(),
+                            backup.display()
+                        )
+                    })?;
+                    link_backup = Some(backup);
+                }
+                let created = (|| {
+                    match SyncMethod::from_str(&meta.deploy_method) {
+                        SyncMethod::Symlink => Self::create_symlink(&dest, &linked_dest)?,
+                        SyncMethod::Copy => Self::copy_dir_recursive(&dest, &linked_dest)?,
+                        SyncMethod::Auto => {
+                            if let Err(err) = Self::create_symlink(&dest, &linked_dest) {
+                                log::warn!("项目技能 symlink 失败，回退为复制: {err}");
+                                Self::copy_dir_recursive(&dest, &linked_dest)?;
+                            }
                         }
                     }
+                    Ok(())
+                })();
+                match created {
+                    Ok(()) => {
+                        link_created = true;
+                    }
+                    Err(err) => {
+                        // 建链失败：旧值还原回原位（还原失败不覆盖原始错误，仅告警）
+                        if let Some(backup) = link_backup.take() {
+                            if let Err(restore_err) = fs::rename(&backup, &linked_dest) {
+                                log::warn!(
+                                    "还原旧内容失败 {} -> {}: {restore_err}",
+                                    backup.display(),
+                                    linked_dest.display()
+                                );
+                            }
+                        }
+                        return Err(err);
+                    }
                 }
-                link_created = true;
             }
             Ok(())
         })();
@@ -1792,7 +1954,22 @@ impl SkillService {
         };
 
         if let Err(err) = db.save_skill(&record) {
-            if link_created {
+            if let Some(backup) = link_backup.take() {
+                // 有被替换的旧值：删掉新链接并把旧值还原回原位
+                if let Err(clean_err) = Self::remove_path(&linked_dest) {
+                    log::warn!(
+                        "保存失败回滚：移除链接 {} 失败: {clean_err}",
+                        linked_dest.display()
+                    );
+                }
+                if let Err(restore_err) = fs::rename(&backup, &linked_dest) {
+                    log::warn!(
+                        "保存失败回滚：还原旧内容 {} -> {} 失败: {restore_err}",
+                        backup.display(),
+                        linked_dest.display()
+                    );
+                }
+            } else if link_created {
                 if let Err(clean_err) = Self::remove_path(&linked_dest) {
                     log::warn!(
                         "保存失败回滚：移除链接 {} 失败: {clean_err}",
@@ -1804,6 +1981,11 @@ impl SkillService {
                 log::warn!("保存失败回滚：删除目录 {} 失败: {clean_err}", dest.display());
             }
             return Err(err.into());
+        }
+
+        // 落库成功：被替换掉的旧值再无保留必要
+        if let Some(backup) = link_backup.take() {
+            Self::cleanup_staging(&backup);
         }
 
         log::info!("Skill {} 已安装到项目 {}", record.name, project_key);
@@ -2070,7 +2252,9 @@ impl SkillService {
     /// 目录名未命中时，再用 SKILL.md frontmatter 的技能名匹配一次（安装目录名可能是仓库名而非技能注册名）。
     /// 返回 (repo "owner/repo", registry_id)。
     async fn match_registry_source(install_name: &str, skill_name: Option<&str>) -> Option<(String, String)> {
-        // 测试环境（SKILLDOCK_TEST_HOME 隔离 home）不做联网匹配，保证测试离线确定性
+        // 测试环境（SKILLDOCK_TEST_HOME 隔离 home）不做联网匹配，保证测试离线确定性；
+        // 与 config.rs 一致，仅 debug 构建响应该变量
+        #[cfg(debug_assertions)]
         if std::env::var("SKILLDOCK_TEST_HOME")
             .map(|v| !v.is_empty())
             .unwrap_or(false)
@@ -2139,7 +2323,7 @@ impl SkillService {
         scope: Option<&str>,
         project_id: Option<&str>,
     ) -> Result<SkillRecord> {
-        let source_dir = config::expand_tilde(dir_path);
+        let source_dir = config::expand_tilde(dir_path)?;
         if !source_dir.is_dir() {
             return Err(anyhow!("目录不存在或不是目录: {dir_path}"));
         }
@@ -2409,9 +2593,10 @@ impl SkillService {
         let source = project_root.join(".claude").join("skills").join(&directory);
         let linked = project_root.join("skills").join(&directory);
 
-        // 仅删除能验证归属的链接/副本；外来内容保留
+        // 仅删除能验证归属的链接/副本；悬空 symlink/普通文件同样按外来内容保留，
+        // 防止卸载误删用户放在 skills/ 下的文件
         if linked.exists() || Self::is_symlink(&linked) {
-            match Self::inspect_destination(&source, &linked, &directory) {
+            match Self::inspect_destination(&source, &linked, &directory, DestCheckMode::Uninstall) {
                 Ok(Some(_)) => {
                     Self::remove_path(&linked).with_context(|| {
                         format!(
@@ -2499,6 +2684,19 @@ impl SkillService {
 
 impl SkillService {
     /// 检查所有已安装 Skill 的更新（仅远端来源；按 (repo, branch) 分组去重下载）
+    /// check_updates 的远端目录匹配谓词：有 source_subpath 时按全路径段匹配，
+    /// 否则按目录末段匹配（均忽略大小写）
+    fn remote_dir_matches(skill: &SkillRecord, remote_directory: &str) -> bool {
+        match skill.source_subpath.as_deref().filter(|s| !s.is_empty()) {
+            Some(subpath) => remote_directory.eq_ignore_ascii_case(subpath),
+            None => {
+                let remote_install_name =
+                    remote_directory.rsplit('/').next().unwrap_or(remote_directory);
+                remote_install_name.eq_ignore_ascii_case(&skill.directory)
+            }
+        }
+    }
+
     pub async fn check_updates(db: &Database) -> Result<Vec<SkillUpdateInfo>> {
         let skills = db.get_all_skills()?;
         let mut updates = Vec::new();
@@ -2555,16 +2753,9 @@ impl SkillService {
 
             for skill in group_skills {
                 // 有 source_subpath 时按全路径段精确匹配，否则按目录末段匹配
-                let remote_match = remote_dirs.iter().find(|(directory, _)| {
-                    match skill.source_subpath.as_deref().filter(|s| !s.is_empty()) {
-                        Some(subpath) => directory.eq_ignore_ascii_case(subpath),
-                        None => {
-                            let remote_install_name =
-                                directory.rsplit('/').next().unwrap_or(directory);
-                            remote_install_name.eq_ignore_ascii_case(&skill.directory)
-                        }
-                    }
-                });
+                let remote_match = remote_dirs
+                    .iter()
+                    .find(|(directory, _)| Self::remote_dir_matches(skill, directory));
                 let Some((remote_directory, _)) = remote_match else {
                     // 远端目录已消失：清除可能残留的更新标记，避免角标卡死
                     if skill.has_update {
@@ -2582,10 +2773,15 @@ impl SkillService {
                     }
                     continue;
                 };
-                let Some(remote_skill_dir) =
-                    Self::resolve_skill_source_dir(temp_dir, remote_directory)
-                else {
-                    continue;
+                let remote_skill_dir = match Self::resolve_skill_source_dir(temp_dir, remote_directory)
+                {
+                    Ok(Some(dir)) => dir,
+                    Ok(None) => continue,
+                    // 解析阶段可能因歧义等多匹配报错，跳过该技能的更新检查
+                    Err(e) => {
+                        log::warn!("解析远程技能目录失败 {}: {e}", skill.id);
+                        continue;
+                    }
                 };
                 let remote_hash = match Self::compute_dir_hash(&remote_skill_dir) {
                     Ok(h) => h,
@@ -2696,7 +2892,7 @@ impl SkillService {
                     Some("checkRepoUrl"),
                 ))
             })?;
-        let source = Self::resolve_skill_source_dir(temp_dir, &remote_match.0).ok_or_else(|| {
+        let source = Self::resolve_skill_source_dir(temp_dir, &remote_match.0)?.ok_or_else(|| {
             anyhow!(format_skill_error(
                 "SKILL_DIR_NOT_FOUND",
                 &[("path", &remote_match.0)],
@@ -2794,7 +2990,7 @@ impl SkillService {
         let mut unmanaged: HashMap<String, UnmanagedSkill> = HashMap::new();
 
         for tool in tools.iter().filter(|t| t.is_enabled) {
-            let root = Self::tool_root(tool);
+            let root = Self::tool_root(tool)?;
             let entries = match fs::read_dir(&root) {
                 Ok(e) => e,
                 Err(_) => continue,
@@ -2851,7 +3047,7 @@ impl SkillService {
                 // 在启用工具的目录中查找源
                 let mut source_path: Option<PathBuf> = None;
                 for tool in tools.iter().filter(|t| t.is_enabled) {
-                    let candidate = Self::tool_root(tool).join(&dir_name);
+                    let candidate = Self::tool_root(tool)?.join(&dir_name);
                     if candidate.is_dir() && candidate.join("SKILL.md").is_file() {
                         source_path = Some(candidate);
                         break;
@@ -2983,7 +3179,7 @@ impl SkillService {
     pub fn migrate_library(db: &Database, target: &str) -> Result<MigrationResult> {
         let _guard = state_write_guard();
         let old_dir = Self::get_library_dir(db)?;
-        let new_dir = config::expand_tilde(target);
+        let new_dir = config::expand_tilde(target)?;
 
         if Self::paths_alias(&old_dir, &new_dir) {
             return Ok(MigrationResult {
@@ -3120,10 +3316,15 @@ impl SkillService {
 
 // ========== 视图转换 / 详情 / 设置 / 发现 ==========
 
-fn iso_time(ts: i64) -> String {
-    chrono::DateTime::from_timestamp(ts, 0)
-        .map(|t| t.format("%Y-%m-%dT%H:%M:%SZ").to_string())
-        .unwrap_or_default()
+/// 时间缺失/越界时的展示占位（0 值不再显示 1970-01-01）
+const UNKNOWN_TIME_LABEL: &str = "未知";
+
+/// Unix 秒 → ISO 时间串；0 / 负数 / 越界返回 None（调用方展示"未知"）
+fn iso_time(ts: i64) -> Option<String> {
+    if ts <= 0 {
+        return None;
+    }
+    chrono::DateTime::from_timestamp(ts, 0).map(|t| t.format("%Y-%m-%dT%H:%M:%SZ").to_string())
 }
 
 /// 格式化文件大小：<1024 → "890 B"；<1MiB → "4.8 KB"；否则 "2.3 MB"
@@ -3156,11 +3357,12 @@ impl SkillService {
                 .and_then(|id| projects.iter().find(|p| p.0 == id).map(|p| p.1.clone()))
         });
 
-        let installed_at = iso_time(record.installed_at);
+        let installed_at = iso_time(record.installed_at)
+            .unwrap_or_else(|| UNKNOWN_TIME_LABEL.to_string());
         let last_updated = if record.updated_at == 0 {
             installed_at.clone()
         } else {
-            iso_time(record.updated_at)
+            iso_time(record.updated_at).unwrap_or_else(|| UNKNOWN_TIME_LABEL.to_string())
         };
 
         // 无真实 commit 时留空（前端显示 "-"），不再用 content_hash 伪造 local-xxxx
@@ -3174,7 +3376,9 @@ impl SkillService {
                 let actually_deployed = flagged
                     && Self::require_valid_directory(&record.directory)
                         .map(|directory| {
-                            let dest = Self::tool_root(t).join(directory);
+                            let dest = Self::tool_root(t)
+                                .map(|root| root.join(directory))
+                                .unwrap_or_default();
                             dest.exists() || Self::is_symlink(&dest)
                         })
                         .unwrap_or(false);
@@ -3184,12 +3388,19 @@ impl SkillService {
 
         let (documentation, files) = if detail {
             let base = Self::skill_storage_dir(db, record).ok();
+            // documentation 只认 SKILL.md：README 是给人看的说明，不是技能清单，
+            // 缺失时保持空（前端有占位分支），读取失败记 warn 不静默吞掉
             let documentation = base
                 .as_ref()
-                .and_then(|dir| {
-                    fs::read_to_string(dir.join("SKILL.md"))
-                        .ok()
-                        .or_else(|| fs::read_to_string(dir.join("README.md")).ok())
+                .and_then(|dir| match fs::read_to_string(dir.join("SKILL.md")) {
+                    Ok(content) => Some(content),
+                    Err(e) => {
+                        log::warn!(
+                            "读取 SKILL.md 失败，documentation 置空: {}: {e}",
+                            dir.display()
+                        );
+                        None
+                    }
                 })
                 .unwrap_or_default();
             let files = base
@@ -3292,12 +3503,24 @@ impl SkillService {
         Ok(files)
     }
 
+    /// 目录 visible 体积：跳过点开头隐藏文件（.git 等，与 build_file_tree 的可见口径一致），
+    /// symlink 不跟随（避免环链与重复计数）
     fn dir_size(dir: &Path) -> u64 {
         let mut total = 0;
         if let Ok(entries) = fs::read_dir(dir) {
             for entry in entries.flatten() {
+                let name = entry.file_name();
+                if name.to_string_lossy().starts_with('.') {
+                    continue;
+                }
                 let path = entry.path();
-                if path.is_dir() {
+                let Ok(file_type) = entry.file_type() else {
+                    continue;
+                };
+                if file_type.is_symlink() {
+                    continue;
+                }
+                if file_type.is_dir() {
                     total += Self::dir_size(&path);
                 } else {
                     total += path.metadata().map(|m| m.len()).unwrap_or(0);
@@ -3335,7 +3558,7 @@ impl SkillService {
         let records = db.get_all_skills()?;
         let mut tools = db.list_tool_adapters()?;
         for tool in &mut tools {
-            tool.detected = Self::tool_root(tool).is_dir();
+            tool.detected = Self::tool_root(tool).map(|p| p.is_dir()).unwrap_or(false);
             tool.installed_skills_count = records
                 .values()
                 .filter(|s| s.enabled_tools.iter().any(|id| id == &tool.id))
@@ -3354,7 +3577,8 @@ impl SkillService {
                 name,
                 skill_count: db.count_skills_by_project_path(&path)? as usize,
                 path: path.clone(),
-                registered_at: iso_time(created_at),
+                registered_at: iso_time(created_at)
+                    .unwrap_or_else(|| UNKNOWN_TIME_LABEL.to_string()),
                 is_path_valid: Path::new(&path).is_dir(),
             });
         }
@@ -3371,7 +3595,7 @@ impl SkillService {
                 .map(|v| if v == "auto" { "symlink".to_string() } else { v })
                 .filter(|v| ["symlink", "copy"].contains(&v.as_str()))
                 .unwrap_or_else(|| "symlink".to_string()),
-            library_path: config::collapse_tilde(&library_path),
+            library_path: config::collapse_tilde(&library_path)?,
             auto_check_update: db
                 .get_setting("auto_check_update")?
                 .map(|v| v == "true")
@@ -3415,13 +3639,13 @@ impl SkillService {
         let current = Self::get_library_dir(db)?;
         let new_raw = settings.library_path.trim();
         let new_dir = if new_raw.is_empty() {
-            config::get_default_library_dir()
+            config::get_default_library_dir()?
         } else {
-            config::expand_tilde(new_raw)
+            config::expand_tilde(new_raw)?
         };
         if !Self::paths_alias(&current, &new_dir) {
             let target = if new_raw.is_empty() {
-                config::get_default_library_dir().display().to_string()
+                config::get_default_library_dir()?.display().to_string()
             } else {
                 new_raw.to_string()
             };
@@ -3486,8 +3710,15 @@ impl SkillService {
             if Self::paths_alias(&source, &linked) {
                 continue;
             }
-            if Self::inspect_destination(&source, &linked, &directory)?.is_some() {
-                Self::remove_path(&linked)?;
+            match Self::inspect_destination(&source, &linked, &directory, DestCheckMode::Redeploy)? {
+                // 已指向 source 或同内容副本：先删旧再按当前方式重建（symlink/copy 切换需要）
+                Some(()) => Self::remove_path(&linked)?,
+                // 不存在：无需处理；悬空 symlink（无数据风险）：移除旧值后再建
+                None => {
+                    if Self::is_symlink(&linked) {
+                        Self::remove_path(&linked)?;
+                    }
+                }
             }
             fs::create_dir_all(&linked_dir)?;
             match method {
@@ -3553,6 +3784,55 @@ mod tests {
     // ========== require_valid_directory ==========
 
     #[test]
+    fn sanitize_install_name_enforces_windows_safe_names() {
+        // 合法名放行
+        assert_eq!(
+            SkillService::sanitize_install_name("my-skill"),
+            Some("my-skill".to_string())
+        );
+        assert_eq!(
+            SkillService::sanitize_install_name("  padded  "),
+            Some("padded".to_string())
+        );
+        // 路径分隔符 / 隐藏名 / 点段拒绝
+        assert!(SkillService::sanitize_install_name("a/b").is_none());
+        assert!(SkillService::sanitize_install_name("a\\b").is_none());
+        assert!(SkillService::sanitize_install_name(".hidden").is_none());
+        assert!(SkillService::sanitize_install_name(".").is_none());
+        assert!(SkillService::sanitize_install_name("..").is_none());
+        assert!(SkillService::sanitize_install_name("").is_none());
+        assert!(SkillService::sanitize_install_name("   ").is_none());
+        // Windows 会静默剥离尾点/尾空格，落盘名与声明名不一致：尾点拒绝，尾空格归一化
+        assert!(SkillService::sanitize_install_name("skill.").is_none());
+        assert_eq!(
+            SkillService::sanitize_install_name("skill "),
+            Some("skill".to_string())
+        );
+        // 非法字符与控制字符
+        assert!(SkillService::sanitize_install_name("a<b>c").is_none());
+        assert!(SkillService::sanitize_install_name("a:b").is_none());
+        assert!(SkillService::sanitize_install_name("a\"b").is_none());
+        assert!(SkillService::sanitize_install_name("a|b").is_none());
+        assert!(SkillService::sanitize_install_name("a?b").is_none());
+        assert!(SkillService::sanitize_install_name("a*b").is_none());
+        assert!(SkillService::sanitize_install_name("a\nb").is_none());
+        // Windows 保留设备名（大小写不敏感，含带扩展名形式）
+        for reserved in ["CON", "con", "Prn", "aux", "NUL", "com1", "LPT9"] {
+            assert!(
+                SkillService::sanitize_install_name(reserved).is_none(),
+                "应拒绝保留名: {reserved}"
+            );
+        }
+        assert!(SkillService::sanitize_install_name("con.txt").is_none());
+        // 超长组件（>255 字节）
+        assert!(SkillService::sanitize_install_name(&"a".repeat(256)).is_none());
+        assert_eq!(
+            SkillService::sanitize_install_name(&"a".repeat(255)),
+            Some("a".repeat(255))
+        );
+    }
+
+    #[test]
     fn require_valid_directory_rejects_traversal() {
         assert!(SkillService::require_valid_directory("..").is_err());
         assert!(SkillService::require_valid_directory("../evil").is_err());
@@ -3589,6 +3869,24 @@ mod tests {
         // 内容变化 → 哈希变化
         fs::write(dir.join("sub/a.txt"), "b").unwrap();
         assert_ne!(SkillService::compute_dir_hash(&dir).unwrap(), h1);
+    }
+
+    #[test]
+    fn compute_dir_hash_rejects_excessive_depth() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut deep = temp.path().join("d0");
+        fs::create_dir_all(&deep).unwrap();
+        // 超过 32 层深度：必须报错而不是返回 partial hash
+        for i in 1..=33 {
+            deep = deep.join(format!("d{i}"));
+        }
+        fs::create_dir_all(&deep).unwrap();
+        fs::write(deep.join("SKILL.md"), "deep").unwrap();
+        let err = SkillService::compute_dir_hash(temp.path()).expect_err("too deep");
+        assert!(
+            err.to_string().contains("嵌套超过"),
+            "unexpected error: {err}"
+        );
     }
 
     // ========== zip-slip / 预算 ==========
@@ -3635,16 +3933,36 @@ mod tests {
         assert!(err.to_string().contains("ARCHIVE_TOO_MANY_ENTRIES"));
     }
 
+    /// 每次 read 最多返回 4 字节的读取器（用于验证预算在条目中途被卡住）
+    struct ChunkedReader {
+        data: Vec<u8>,
+        pos: usize,
+    }
+    impl std::io::Read for ChunkedReader {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let end = (self.pos + 4).min(self.data.len());
+            let n = end - self.pos;
+            buf[..n].copy_from_slice(&self.data[self.pos..end]);
+            self.pos = end;
+            Ok(n)
+        }
+    }
+
     #[test]
     fn copy_entry_within_budget_stops_before_exceeding_the_limit() {
-        let mut reader = std::io::Cursor::new(vec![0u8; 64 * 1024]);
+        // 12 字节分块读入，剩余预算 6：前 4 字节计入并写入，第 8 字节超限
+        let mut reader = ChunkedReader {
+            data: vec![0u8; 12],
+            pos: 0,
+        };
         let mut writer = Vec::new();
-        let mut total = MAX_ARCHIVE_TOTAL_BYTES - 10;
+        let mut total = MAX_ARCHIVE_TOTAL_BYTES - 6;
         let err = SkillService::copy_entry_within_budget(&mut reader, &mut writer, &mut total)
             .expect_err("budget exceeded");
         assert!(err.to_string().contains("ARCHIVE_TOO_LARGE"));
-        // 只写入了预算允许的部分
-        assert!(writer.len() <= 16 * 1024);
+        // 只写入了预算允许的 4 字节，超限部分未写入，预算计数停在允许值
+        assert_eq!(writer.len(), 4);
+        assert_eq!(total, MAX_ARCHIVE_TOTAL_BYTES - 2);
     }
 
     #[test]
@@ -3758,7 +4076,7 @@ mod tests {
     fn resolve_skill_source_dir_returns_repo_root_for_root_level_skill() {
         let temp = tempfile::tempdir().unwrap();
         write_skill(temp.path());
-        let found = SkillService::resolve_skill_source_dir(temp.path(), "myrepo");
+        let found = SkillService::resolve_skill_source_dir(temp.path(), "myrepo").unwrap();
         assert_eq!(found.as_deref(), Some(temp.path()));
     }
 
@@ -3766,7 +4084,7 @@ mod tests {
     fn resolve_skill_source_dir_returns_direct_nested_directory() {
         let temp = tempfile::tempdir().unwrap();
         write_skill(&temp.path().join("skills/foo"));
-        let found = SkillService::resolve_skill_source_dir(temp.path(), "skills/foo");
+        let found = SkillService::resolve_skill_source_dir(temp.path(), "skills/foo").unwrap();
         assert_eq!(found.as_deref(), Some(temp.path().join("skills/foo").as_path()));
     }
 
@@ -3775,7 +4093,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         write_skill(&temp.path().join("catalog/deep/foo"));
         // 声明路径不存在，但末段名能递归命中
-        let found = SkillService::resolve_skill_source_dir(temp.path(), "missing/foo");
+        let found = SkillService::resolve_skill_source_dir(temp.path(), "missing/foo").unwrap();
         assert_eq!(
             found.as_deref(),
             Some(temp.path().join("catalog/deep/foo").as_path())
@@ -3788,7 +4106,8 @@ mod tests {
         // wrapper 目录名匹配但没有 SKILL.md，真实技能在内层
         fs::create_dir_all(temp.path().join("ast-grep")).unwrap();
         write_skill(&temp.path().join("ast-grep/agent-skill"));
-        let found = SkillService::resolve_skill_source_dir(temp.path(), "ast-grep/agent-skill");
+        let found = SkillService::resolve_skill_source_dir(temp.path(), "ast-grep/agent-skill")
+            .unwrap();
         assert_eq!(
             found.as_deref(),
             Some(temp.path().join("ast-grep/agent-skill").as_path())
@@ -3800,7 +4119,11 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         fs::create_dir_all(temp.path().join("a/b")).unwrap();
         fs::write(temp.path().join("a/b/readme.txt"), "x").unwrap();
-        assert!(SkillService::resolve_skill_source_dir(temp.path(), "a/b").is_none());
+        assert!(
+            SkillService::resolve_skill_source_dir(temp.path(), "a/b")
+                .unwrap()
+                .is_none()
+        );
     }
 
     // ========== 仓库坐标校验 ==========
@@ -3823,8 +4146,10 @@ mod tests {
         assert!(SkillService::validate_repo_ref("owner", "repo", "a/./b").is_err());
         assert!(SkillService::validate_repo_ref("owner", "repo", "a%2fb").is_err());
         assert!(SkillService::validate_repo_ref("owner", "repo", "branch#frag").is_err());
-        assert!(SkillService::validate_repo_ref("owner", "repo", "a..b").is_ok());
-        assert!(SkillService::validate_repo_ref("owner", "repo", "-x").is_ok());
+        // 连续两点与前导连字符同样是 git 拒绝的引用形态
+        assert!(SkillService::validate_repo_ref("owner", "repo", "a..b").is_err());
+        assert!(SkillService::validate_repo_ref("owner", "repo", "-x").is_err());
+        assert!(SkillService::validate_repo_ref("owner", "repo", "feat/-x").is_err());
     }
 
     #[test]
@@ -3859,7 +4184,6 @@ mod tests {
 
     #[test]
     fn project_skill_id_suffixes_deterministically_on_conflict() {
-        let db = Database::memory().unwrap();
         let mut skills = IndexMap::new();
         assert_eq!(
             SkillService::project_skill_id("owner/repo:a", &skills, "/p"),
@@ -3897,9 +4221,14 @@ mod tests {
         skills.insert(record.id.clone(), record);
         let id1 = SkillService::project_skill_id("owner/repo:a", &skills, "/p");
         let id2 = SkillService::project_skill_id("owner/repo:a", &skills, "/p");
+        // 冲突时加后缀且确定性；不同项目路径后缀不同
         assert_eq!(id1, id2);
         assert!(id1.starts_with("owner/repo:a#project:"));
-        drop(db);
+        assert_ne!(id1, "owner/repo:a");
+        assert_ne!(
+            id1,
+            SkillService::project_skill_id("owner/repo:a", &skills, "/other")
+        );
     }
 
     #[test]
@@ -3989,5 +4318,304 @@ mod tests {
             .filter(|name| name.starts_with('.'))
             .collect();
         assert!(leftovers.is_empty(), "暂存目录残留: {leftovers:?}");
+    }
+
+    // ========== 主路径：migrate_library / save_settings / check_updates ==========
+
+    fn memory_db_with_library(library: &Path) -> Database {
+        let db = Database::memory().unwrap();
+        db.set_setting("library_path", &library.display().to_string())
+            .unwrap();
+        db
+    }
+
+    fn test_skill_record(id: &str, directory: &str, scope: &str, project_path: Option<&str>) -> SkillRecord {
+        SkillRecord {
+            id: id.to_string(),
+            name: directory.to_string(),
+            display_name: directory.to_string(),
+            description: None,
+            directory: directory.to_string(),
+            tags: vec![],
+            scope: scope.to_string(),
+            project_id: project_path.map(|p| p.to_string()),
+            project_path: project_path.map(|p| p.to_string()),
+            source_type: "github".to_string(),
+            source_repo: Some(format!("owner/{id}")),
+            source_branch: None,
+            source_subpath: None,
+            source_author: None,
+            source_registry_id: None,
+            source_url: None,
+            source_github_detected: false,
+            current_commit: None,
+            latest_commit: None,
+            has_update: false,
+            content_hash: None,
+            enabled_tools: vec![],
+            deploy_method: "auto".to_string(),
+            installed_at: 1,
+            updated_at: 0,
+            author: None,
+            license: None,
+        }
+    }
+
+    fn test_tool(id: &str, current_path: &str) -> ToolAdapter {
+        ToolAdapter {
+            id: id.to_string(),
+            name: id.to_string(),
+            vendor: "test".to_string(),
+            description: String::new(),
+            default_path: current_path.to_string(),
+            current_path: current_path.to_string(),
+            is_builtin: false,
+            is_enabled: true,
+            installed_skills_count: 0,
+            detected: true,
+            version: None,
+            color: "#000000".to_string(),
+        }
+    }
+
+    #[test]
+    fn migrate_library_moves_all_entries_and_persists_setting() {
+        let temp = tempfile::tempdir().unwrap();
+        let old = temp.path().join("old-lib");
+        let new = temp.path().join("new-lib");
+        fs::create_dir_all(old.join("skill-a")).unwrap();
+        fs::write(old.join("skill-a/SKILL.md"), "a").unwrap();
+        fs::create_dir_all(old.join("skill-b")).unwrap();
+        fs::write(old.join("skill-b/SKILL.md"), "b").unwrap();
+        let db = memory_db_with_library(&old);
+
+        let result = SkillService::migrate_library(&db, &new.display().to_string()).unwrap();
+        assert_eq!(result.migrated_count, 2);
+        assert_eq!(result.skipped_count, 0);
+        assert!(new.join("skill-a/SKILL.md").exists());
+        assert!(new.join("skill-b/SKILL.md").exists());
+        assert!(!old.join("skill-a").exists());
+        assert_eq!(
+            db.get_setting("library_path").unwrap().unwrap(),
+            new.display().to_string()
+        );
+    }
+
+    #[test]
+    fn migrate_library_skips_existing_destination_names() {
+        let temp = tempfile::tempdir().unwrap();
+        let old = temp.path().join("old-lib");
+        let new = temp.path().join("new-lib");
+        fs::create_dir_all(old.join("skill-a")).unwrap();
+        fs::write(old.join("skill-a/SKILL.md"), "old-a").unwrap();
+        fs::create_dir_all(old.join("skill-b")).unwrap();
+        fs::write(old.join("skill-b/SKILL.md"), "b").unwrap();
+        // 目标已存在同名目录
+        fs::create_dir_all(new.join("skill-a")).unwrap();
+        fs::write(new.join("skill-a/SKILL.md"), "new-a").unwrap();
+        let db = memory_db_with_library(&old);
+
+        let result = SkillService::migrate_library(&db, &new.display().to_string()).unwrap();
+        assert_eq!(result.migrated_count, 1);
+        assert_eq!(result.skipped_count, 1);
+        assert_eq!(result.skipped, vec!["skill-a".to_string()]);
+        // 跳过的条目旧目录保持原样，新目录内容不被覆盖
+        assert_eq!(
+            fs::read_to_string(old.join("skill-a/SKILL.md")).unwrap(),
+            "old-a"
+        );
+        assert_eq!(
+            fs::read_to_string(new.join("skill-a/SKILL.md")).unwrap(),
+            "new-a"
+        );
+        assert!(new.join("skill-b/SKILL.md").exists());
+    }
+
+    #[test]
+    fn migrate_library_reports_redeploy_failure_after_moving_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let old = temp.path().join("old-lib");
+        let new = temp.path().join("new-lib");
+        fs::create_dir_all(old.join("skill-x")).unwrap();
+        fs::write(old.join("skill-x/SKILL.md"), "x").unwrap();
+        let db = memory_db_with_library(&old);
+
+        // 工具的 current_path 落在一个普通文件之下：create_dir_all 必失败，
+        // 用来确定性触发重部署失败分支
+        let blocker = temp.path().join("not-a-dir");
+        fs::write(&blocker, "x").unwrap();
+        let broken_tool = test_tool(
+            "broken",
+            &blocker.join("tools").display().to_string(),
+        );
+        db.insert_tool_adapter(&broken_tool, 0).unwrap();
+
+        let mut record = test_skill_record("owner/repo:x", "skill-x", SKILL_SCOPE_GLOBAL, None);
+        record.enabled_tools = vec!["broken".to_string()];
+        db.save_skill(&record).unwrap();
+
+        let err = SkillService::migrate_library(&db, &new.display().to_string())
+            .expect_err("redeploy failure must surface");
+        assert!(
+            err.to_string().contains("重部署失败"),
+            "unexpected error: {err}"
+        );
+        // 文件已迁移且设置已持久化（先迁移后重部署的语义）
+        assert!(new.join("skill-x/SKILL.md").exists());
+        assert_eq!(
+            db.get_setting("library_path").unwrap().unwrap(),
+            new.display().to_string()
+        );
+    }
+
+    #[test]
+    fn save_settings_returns_affected_project_skills_only_on_method_change() {
+        let temp = tempfile::tempdir().unwrap();
+        let lib = temp.path().join("lib");
+        fs::create_dir_all(&lib).unwrap();
+        let db = memory_db_with_library(&lib);
+        db.set_setting("distribution_method", "symlink").unwrap();
+        db.save_skill(&test_skill_record(
+            "owner/repo:p",
+            "proj-skill",
+            SKILL_SCOPE_PROJECT,
+            Some("/proj"),
+        ))
+        .unwrap();
+        db.save_skill(&test_skill_record(
+            "owner/repo:g",
+            "global-skill",
+            SKILL_SCOPE_GLOBAL,
+            None,
+        ))
+        .unwrap();
+
+        let mut settings = SkillService::get_settings(&db).unwrap();
+        settings.distribution_method = "copy".to_string();
+        let affected = SkillService::save_settings(&db, &settings).unwrap();
+        // 只有项目级技能受影响；全局技能不随分发方式变更
+        assert_eq!(affected, vec!["owner/repo:p".to_string()]);
+        assert_eq!(
+            db.get_setting("distribution_method").unwrap().unwrap(),
+            "copy"
+        );
+
+        // 方法不变 → 空列表
+        let again = SkillService::save_settings(&db, &settings).unwrap();
+        assert!(again.is_empty(), "未变更应返回空列表: {again:?}");
+    }
+
+    #[test]
+    fn remote_dir_matches_covers_missing_renamed_and_case_diff() {
+        let skill = test_skill_record("owner/repo:m", "my-skill", SKILL_SCOPE_GLOBAL, None);
+        // 远端缺失：目录改名后不再匹配（check_updates 据此清除 has_update）
+        assert!(!SkillService::remote_dir_matches(&skill, "renamed-skill"));
+        // 末段名匹配（含大小写差异）
+        assert!(SkillService::remote_dir_matches(&skill, "my-skill"));
+        assert!(SkillService::remote_dir_matches(&skill, "skills/My-Skill"));
+        assert!(SkillService::remote_dir_matches(&skill, "catalog/deep/MY-SKILL"));
+
+        // 有 source_subpath 时按全路径段匹配，末段相同但路径不同不算
+        let mut subpathed = skill.clone();
+        subpathed.source_subpath = Some("skills/my-skill".to_string());
+        assert!(SkillService::remote_dir_matches(&subpathed, "skills/my-skill"));
+        assert!(SkillService::remote_dir_matches(&subpathed, "SKILLS/My-Skill"));
+        assert!(!SkillService::remote_dir_matches(&subpathed, "other/my-skill"));
+    }
+
+    #[test]
+    fn inspect_destination_classifies_dangling_symlink_by_mode() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("SKILL.md"), "s").unwrap();
+        let skills_dir = temp.path().join("skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+
+        // 创建 symlink 需要 Windows 开发者模式/管理员权限；无权限时跳过 symlink 相关断言
+        let make_link = |target: &Path, link: &Path| -> bool {
+            #[cfg(unix)]
+            let result = std::os::unix::fs::symlink(target, link);
+            #[cfg(windows)]
+            let result = std::os::windows::fs::symlink_dir(target, link);
+            match result {
+                Ok(()) => true,
+                Err(e) => {
+                    log::warn!("测试环境无法创建 symlink，跳过相关断言: {e}");
+                    false
+                }
+            }
+        };
+
+        // 悬空 symlink：安装/重部署可安全覆盖；卸载按外来内容拒绝
+        let linked = skills_dir.join("my-skill");
+        if make_link(&temp.path().join("gone"), &linked) {
+            assert!(SkillService::inspect_destination(
+                &source,
+                &linked,
+                "my-skill",
+                DestCheckMode::Install
+            )
+            .unwrap()
+            .is_none());
+            assert!(SkillService::inspect_destination(
+                &source,
+                &linked,
+                "my-skill",
+                DestCheckMode::Redeploy
+            )
+            .unwrap()
+            .is_none());
+            assert!(SkillService::inspect_destination(
+                &source,
+                &linked,
+                "my-skill",
+                DestCheckMode::Uninstall
+            )
+            .is_err());
+        }
+
+        // 普通文件：仅安装场景可安全覆盖；重部署/卸载拒绝
+        let file_dest = skills_dir.join("file-skill");
+        fs::write(&file_dest, "user data").unwrap();
+        assert!(SkillService::inspect_destination(
+            &source,
+            &file_dest,
+            "file-skill",
+            DestCheckMode::Install
+        )
+        .unwrap()
+        .is_none());
+        assert!(SkillService::inspect_destination(
+            &source,
+            &file_dest,
+            "file-skill",
+            DestCheckMode::Redeploy
+        )
+        .is_err());
+        assert!(SkillService::inspect_destination(
+            &source,
+            &file_dest,
+            "file-skill",
+            DestCheckMode::Uninstall
+        )
+        .is_err());
+
+        // 指向 source 的 symlink：所有场景都认领归属
+        let good_link = skills_dir.join("good-skill");
+        if make_link(&source, &good_link) {
+            for mode in [
+                DestCheckMode::Install,
+                DestCheckMode::Redeploy,
+                DestCheckMode::Uninstall,
+            ] {
+                assert!(
+                    SkillService::inspect_destination(&source, &good_link, "good-skill", mode)
+                        .unwrap()
+                        .is_some(),
+                    "指向 source 的链接应被认领: {mode:?}"
+                );
+            }
+        }
     }
 }

@@ -12,7 +12,7 @@ import {
   FolderOpen,
   AlertCircle
 } from 'lucide-react';
-import { ToolAdapter, AppSettings, AddToastFn, SkillDeployMethod } from '../types';
+import { ToolAdapter, AppSettings, AddToastFn, DistributionMethod } from '../types';
 import { ToolBrandIcon } from './icons/BrandIcons';
 import { useScanUnmanagedSkills, useImportSkillsFromApps } from '../hooks/useSkills';
 import { useAppState } from '../hooks/useAppState';
@@ -42,7 +42,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
   // Skill repository settings state inside onboarding
   // 引导内只提供 symlink / copy 两档；设置为 auto 时默认落在 symlink
   const [customPath, setCustomPath] = useState(settings?.libraryPath || '');
-  const [deployMethod, setDeployMethod] = useState<SkillDeployMethod>(
+  const [deployMethod, setDeployMethod] = useState<DistributionMethod>(
     settings?.distributionMethod === 'copy' ? 'copy' : 'symlink'
   );
 

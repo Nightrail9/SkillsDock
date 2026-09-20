@@ -5,6 +5,8 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::services::skill_service::SkillService;
+
 /// 从本地目录识别出的 Git 来源信息
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitSourceInfo {
@@ -27,6 +29,13 @@ pub fn detect_github_source(dir: &Path) -> Option<GitSourceInfo> {
     let repo = parse_github_repo(&remote_url)?;
 
     let (branch, commit) = read_head(&git_dir);
+    // HEAD 内容来自磁盘、可被篡改：branch 段按仓库坐标校验规则过一遍，
+    // 避免把非法引用（如 `../config`）带到上层展示与拼接
+    let branch = branch.filter(|name| {
+        let mut parts = repo.splitn(2, '/');
+        let (owner, repo_name) = (parts.next().unwrap_or_default(), parts.next().unwrap_or_default());
+        SkillService::validate_repo_ref(owner, repo_name, name).is_ok()
+    });
 
     Some(GitSourceInfo {
         repo,
@@ -109,8 +118,33 @@ fn read_head(git_dir: &Path) -> (Option<String>, Option<String>) {
     }
 }
 
+/// git 引用作为文件路径拼接前的安全校验（HEAD/refs 内容来自磁盘，可能被篡改）。
+/// 拒绝：绝对路径（含盘符与 UNC）、`..` 段、`.` 段、空串、空段、反斜杠、控制字符、`?`/`*` 通配符。
+/// 仅接受形如 `refs/heads/main` 的多段普通相对路径。
+fn is_safe_ref_path(reference: &str) -> bool {
+    if reference.is_empty()
+        || reference.starts_with('/')
+        || reference.starts_with('\\')
+        || reference.contains("//")
+        || reference.contains('\\')
+        || reference.contains(':')
+        || reference.contains('?')
+        || reference.contains('*')
+        || reference.chars().any(|c| c.is_ascii_control())
+    {
+        return false;
+    }
+    !reference
+        .split('/')
+        .any(|segment| segment.is_empty() || segment == "." || segment == "..")
+}
+
 /// 读引用对应的 SHA：先 loose ref，再 packed-refs；返回短 SHA
 fn read_ref(git_dir: &Path, reference: &str) -> Option<String> {
+    if !is_safe_ref_path(reference) {
+        log::warn!("拒绝拼接非法 git 引用路径: {reference:?}");
+        return None;
+    }
     let loose: PathBuf = git_dir.join(reference);
     if let Ok(sha) = std::fs::read_to_string(&loose) {
         let sha = sha.trim();
@@ -218,5 +252,45 @@ mod tests {
     fn returns_none_without_git_dir() {
         let temp = tempfile::tempdir().unwrap();
         assert!(detect_github_source(temp.path()).is_none());
+    }
+
+    #[test]
+    fn rejects_traversal_and_absolute_ref_paths() {
+        assert!(is_safe_ref_path("refs/heads/main"));
+        assert!(is_safe_ref_path("refs/heads/feature/x"));
+        // 相对路径穿越
+        assert!(!is_safe_ref_path("../config"));
+        assert!(!is_safe_ref_path("refs/../../config"));
+        assert!(!is_safe_ref_path("."));
+        assert!(!is_safe_ref_path(""));
+        // 绝对路径（POSIX / Windows / UNC）
+        assert!(!is_safe_ref_path("/etc/passwd"));
+        assert!(!is_safe_ref_path("C:/Windows/config"));
+        assert!(!is_safe_ref_path("C:\\Windows\\config"));
+        assert!(!is_safe_ref_path("\\\\server\\share"));
+        // 反斜杠、通配符与控制字符
+        assert!(!is_safe_ref_path("refs\\heads\\main"));
+        assert!(!is_safe_ref_path("refs/heads/ma?n"));
+        assert!(!is_safe_ref_path("refs/heads/ma*n"));
+        assert!(!is_safe_ref_path("refs/heads/ma\nn"));
+        // 空段
+        assert!(!is_safe_ref_path("refs//heads/main"));
+    }
+
+    #[test]
+    fn sanitizes_tampered_head_with_traversal_reference() {
+        let temp = tempfile::tempdir().unwrap();
+        write_git_repo(
+            temp.path(),
+            "[remote \"origin\"]\n\turl = https://github.com/owner/repo.git\n",
+            // HEAD 被篡改成引用仓库外文件
+            "ref: refs/heads/../../secret\n",
+            &[],
+        );
+        let info = detect_github_source(temp.path()).expect("should still detect repo");
+        assert_eq!(info.repo, "owner/repo");
+        // 非法引用不得进入 branch，也不得拼出仓库外的 commit
+        assert_eq!(info.branch, None);
+        assert_eq!(info.commit, None);
     }
 }

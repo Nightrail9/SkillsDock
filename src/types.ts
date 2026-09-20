@@ -2,11 +2,11 @@ export type ToolId = string;
 
 export type ScopeType = 'global' | 'project';
 
-/** 单个技能的实际分发方式（Skill.deployMethod / 安装请求只会是这两个值） */
-export type SkillDeployMethod = 'symlink' | 'copy';
+/** 单个技能的实际分发方式（Skill.deployMethod；'auto' = symlink 优先失败回退 copy，为后端存量记录的主要值） */
+export type SkillDeployMethod = 'symlink' | 'copy' | 'auto';
 
-/** 设置项分发方式（安装层的 auto 回退兜底由后端处理，设置项不再暴露） */
-export type DistributionMethod = SkillDeployMethod;
+/** 设置项分发方式（后端 save_settings 仅接受这两个值） */
+export type DistributionMethod = 'symlink' | 'copy';
 
 export type MainNavTab = 'installed' | 'discovery' | 'tools' | 'projects' | 'settings';
 

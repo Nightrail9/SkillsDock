@@ -65,7 +65,7 @@ pub async fn search_skills_sh(
         ],
     )?;
 
-    let resp = http_client()
+    let resp = http_client()?
         .get(url)
         .timeout(std::time::Duration::from_secs(10))
         .send()

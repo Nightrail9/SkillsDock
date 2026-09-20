@@ -40,6 +40,7 @@ pub fn get_app_state(state: State<'_, AppState>) -> CmdResult<AppStateSnapshot> 
             .as_deref()
             == Some("true"),
         home_dir: crate::config::get_home_dir()
+            .map_err(|e| e.to_string())?
             .to_string_lossy()
             .replace('\\', "/"),
     })
@@ -216,7 +217,10 @@ fn validate_path_inner(raw: &str) -> ToolPathValidation {
     if raw.trim().is_empty() {
         return invalid("路径不能为空");
     }
-    let path = config::expand_tilde(raw);
+    let path = match config::expand_tilde(raw) {
+        Ok(p) => p,
+        Err(e) => return invalid(&format!("无法展开路径: {e}")),
+    };
     if path.exists() {
         if !path.is_dir() {
             return ToolPathValidation {
@@ -412,7 +416,7 @@ pub fn get_skill_projects(state: State<'_, AppState>) -> CmdResult<Vec<ProjectSc
 pub fn add_skill_project(state: State<'_, AppState>, path: String) -> CmdResult<ProjectScope> {
     let db = &state.db;
     // 规范化：必须存在且为目录、canonicalize、去 Windows \\?\ 前缀
-    let raw = config::expand_tilde(&path);
+    let raw = config::expand_tilde(&path).map_err(|e| e.to_string())?;
     if !raw.is_dir() {
         return Err(format!("项目目录不存在或不是目录: {path}"));
     }

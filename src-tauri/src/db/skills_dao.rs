@@ -7,7 +7,15 @@ use indexmap::IndexMap;
 use rusqlite::params;
 
 fn parse_json_string_list(raw: &str) -> Vec<String> {
-    serde_json::from_str(raw).unwrap_or_default()
+    match serde_json::from_str(raw) {
+        Ok(list) => list,
+        Err(e) => {
+            // 解析失败不再静默丢数据：记录截断的原始内容后返回空列表
+            let truncated: String = raw.chars().take(80).collect();
+            log::warn!("JSON 字符串列表解析失败，按空列表处理: {e}; raw={truncated:?}");
+            Vec::new()
+        }
+    }
 }
 
 /// strip 核心：在已有事务内从所有技能的 enabled_tools 中移除工具 id
@@ -307,6 +315,17 @@ mod tests {
             author: None,
             license: None,
         }
+    }
+
+    #[test]
+    fn parse_json_string_list_tolerates_invalid_json() {
+        assert_eq!(
+            parse_json_string_list("[\"a\",\"b\"]"),
+            vec!["a".to_string(), "b".to_string()]
+        );
+        assert!(parse_json_string_list("not json").is_empty());
+        assert!(parse_json_string_list("{\"a\":1}").is_empty());
+        assert!(parse_json_string_list("").is_empty());
     }
 
     #[test]

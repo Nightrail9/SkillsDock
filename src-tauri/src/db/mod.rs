@@ -117,7 +117,7 @@ const BUILTIN_TOOLS: &[BuiltinToolSeed] = &[
 impl Database {
     /// 初始化数据库（默认路径 `~/.skilldock/skilldock.db`）
     pub fn init() -> Result<Self, AppError> {
-        Self::init_at(&config::get_db_path())
+        Self::init_at(&config::get_db_path().map_err(|e| AppError::Config(e.to_string()))?)
     }
 
     /// 在指定路径初始化数据库
@@ -237,7 +237,8 @@ impl Database {
 
     /// 内置工具技能目录是否已检测到（与 SkillService::api_tools 的 detected 语义一致）
     fn tool_path_detected(path: &str) -> bool {
-        config::expand_tilde(path).is_dir()
+        // 路径展开失败（home 不可用）按未检测到处理
+        config::expand_tilde(path).map(|p| p.is_dir()).unwrap_or(false)
     }
 
     /// 首次启动写入内置工具种子（仅当表为空）；未检测到目录的工具默认停用

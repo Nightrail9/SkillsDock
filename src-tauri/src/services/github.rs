@@ -12,15 +12,20 @@ use crate::error::format_skill_error;
 use crate::services::skill_service::{SkillService, MAX_ARCHIVE_DOWNLOAD_BYTES};
 use crate::types::SkillRepo;
 
-/// 自建 HTTP 客户端（不依赖 proxy 层），带 User-Agent（GitHub API 必需）
-pub fn http_client() -> &'static reqwest::Client {
+/// 自建 HTTP 客户端（不依赖 proxy 层），带 User-Agent（GitHub API 必需）。
+/// 连接超时 10s；整体超时 60s 与下载预算（download_repo_with_timeout）对齐，
+/// commits API 等轻量请求用每请求 .timeout(...) 覆盖更小的值。
+pub fn http_client() -> Result<&'static reqwest::Client> {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    CLIENT.get_or_init(|| {
-        reqwest::Client::builder()
-            .user_agent(concat!("skilldock/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .expect("failed to build reqwest client")
-    })
+    if let Some(client) = CLIENT.get() {
+        return Ok(client);
+    }
+    let client = reqwest::Client::builder()
+        .user_agent(concat!("skilldock/", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(60))
+        .build()?;
+    Ok(CLIENT.get_or_init(|| client))
 }
 
 /// 下载并解压仓库 ZIP 到临时目录
@@ -94,7 +99,7 @@ pub async fn download_and_extract(url: &str, dest: &Path) -> Result<()> {
 
 /// 逐块下载并卡住压缩体大小上限（不信任 Content-Length）
 async fn download_bytes_capped(url: &str) -> Result<Vec<u8>> {
-    let response = http_client().get(url).send().await?;
+    let response = http_client()?.get(url).send().await?;
     if !response.status().is_success() {
         let status = response.status().as_u16().to_string();
         return Err(anyhow!(format_skill_error(
@@ -132,6 +137,7 @@ pub async fn fetch_latest_commit(owner: &str, name: &str, branch: &str) -> Optio
         owner, name, branch
     );
     let response = http_client()
+        .ok()?
         .get(&url)
         .timeout(std::time::Duration::from_secs(15))
         .send()
