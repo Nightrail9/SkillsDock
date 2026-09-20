@@ -80,6 +80,10 @@ struct ProjectInstallMeta {
     display_name: Option<String>,
     input_description: Option<String>,
     tags: Vec<String>,
+    /// 安装时用户选择的工具（仅记录偏好，项目级不做工具部署）
+    enabled_tools: Vec<String>,
+    /// 安装时选择的项目技能同步方式。
+    deploy_method: String,
 }
 
 impl SyncMethod {
@@ -680,8 +684,17 @@ impl SkillService {
 
     #[cfg(windows)]
     pub fn create_symlink(src: &Path, dest: &Path) -> Result<()> {
-        std::os::windows::fs::symlink_dir(src, dest)
-            .with_context(|| format!("创建符号链接失败: {} -> {}", src.display(), dest.display()))
+        std::os::windows::fs::symlink_dir(src, dest).map_err(|err| {
+            if err.raw_os_error() == Some(1314) {
+                anyhow!(
+                    "创建符号链接失败（Windows 错误 1314，当前进程没有创建符号链接的权限）: {} -> {}。请启用 Windows 开发者模式或以管理员身份运行应用",
+                    src.display(),
+                    dest.display()
+                )
+            } else {
+                anyhow!("创建符号链接失败: {} -> {}: {err}", src.display(), dest.display())
+            }
+        })
     }
 
     /// 检查路径是否为符号链接
@@ -1267,8 +1280,21 @@ impl SkillService {
         // ========== 项目级作用域 ==========
         if scope == SKILL_SCOPE_PROJECT {
             let project = Self::resolve_project(db, project_id)?;
+            let project_deploy_method = match deploy_method {
+                Some("symlink") => "symlink",
+                Some("copy") => "copy",
+                _ => "auto",
+            };
             return Self::install_to_project(
-                db, &input, &repo, &directory, &install_name, &source_type, &project,
+                db,
+                &input,
+                &repo,
+                &directory,
+                &install_name,
+                &source_type,
+                &project,
+                &tool_ids,
+                project_deploy_method,
             )
             .await;
         }
@@ -1499,6 +1525,8 @@ impl SkillService {
         install_name: &str,
         source_type: &str,
         project: &(i64, String, String, i64),
+        tool_ids: &[String],
+        deploy_method: &str,
     ) -> Result<SkillRecord> {
         let project_root = PathBuf::from(&project.2);
         if !project_root.is_dir() {
@@ -1553,6 +1581,8 @@ impl SkillService {
 
         // 网络 I/O 结束，冲突复查 + 落盘 + 入库同一临界区
         let _guard = state_write_guard();
+        // 项目级不做工具部署，但记录用户安装时选择的工具偏好
+        let enabled_tools = Self::validated_tool_ids(db, tool_ids)?;
         Self::install_dir_to_project(
             db,
             project,
@@ -1575,6 +1605,8 @@ impl SkillService {
                     .filter(|d| !d.trim().is_empty()),
                 input_description: input.description.clone(),
                 tags: input.tags.clone().unwrap_or_default(),
+                enabled_tools,
+                deploy_method: deploy_method.to_string(),
             },
         )
     }
@@ -1703,7 +1735,7 @@ impl SkillService {
         let link_result: Result<()> = (|| {
             fs::create_dir_all(&linked_dir)?;
             if Self::inspect_destination(&dest, &linked_dest, install_name)?.is_none() {
-                match Self::get_sync_method(db) {
+                match SyncMethod::from_str(&meta.deploy_method) {
                     SyncMethod::Symlink => Self::create_symlink(&dest, &linked_dest)?,
                     SyncMethod::Copy => Self::copy_dir_recursive(&dest, &linked_dest)?,
                     SyncMethod::Auto => {
@@ -1751,8 +1783,8 @@ impl SkillService {
             latest_commit: None,
             has_update: false,
             content_hash,
-            enabled_tools: vec![],
-            deploy_method: "auto".to_string(),
+            enabled_tools: meta.enabled_tools.clone(),
+            deploy_method: meta.deploy_method.clone(),
             installed_at: now,
             updated_at: 0,
             author: meta.source_author.clone(),
@@ -1820,6 +1852,8 @@ impl SkillService {
                 display_name: None,
                 input_description: None,
                 tags: vec![],
+                enabled_tools: vec![],
+                deploy_method: "auto".to_string(),
             },
         )?;
         Ok(Some(record))
@@ -2183,6 +2217,8 @@ impl SkillService {
                     display_name: None,
                     input_description: None,
                     tags: vec![],
+                    enabled_tools: vec![],
+                    deploy_method: "auto".to_string(),
                 },
             );
         }
@@ -2416,10 +2452,12 @@ impl SkillService {
             .get_skill(id)?
             .ok_or_else(|| anyhow!("Skill not found: {id}"))?;
 
-        // 项目级 Skill 不参与工具分发，开关无意义：直接视为成功
+        // 项目级 Skill 不参与工具分发（经 <project>/.claude/skills + skills 链接生效），
+        // 明确报错而非静默成功，避免前端"点了没反应"的死交互
         if record.is_project() {
-            log::warn!("项目级 Skill {} 不支持工具开关，忽略本次切换", record.id);
-            return Ok(());
+            return Err(anyhow!(
+                "项目级技能不支持工具开关：其通过项目内 .claude/skills 与 skills 链接直接生效"
+            ));
         }
 
         let tool = db
@@ -3125,13 +3163,8 @@ impl SkillService {
             iso_time(record.updated_at)
         };
 
-        let current_commit = record.current_commit.clone().unwrap_or_else(|| {
-            record
-                .content_hash
-                .as_deref()
-                .map(|h| format!("local-{}", &h[..h.len().min(4)]))
-                .unwrap_or_else(|| "local".to_string())
-        });
+        // 无真实 commit 时留空（前端显示 "-"），不再用 content_hash 伪造 local-xxxx
+        let current_commit = record.current_commit.clone().unwrap_or_default();
 
         let deployed_tools: HashMap<String, bool> = tools
             .iter()

@@ -37,10 +37,11 @@ export const ShareModal: React.FC<ShareModalProps> = ({
       : [];
 
   // 打开弹窗即向后端请求真实分享链接（纯本地技能会被后端拒绝）
+  // id 可能包含逗号（如 local:<目录名>），依赖键用 JSON 序列化，传参直接用数组
   const { mutate: createLink, isPending, isError, error, data: shareUrl } = createShareLinkMutation;
-  const idsKey = targetIds.join(',');
+  const idsKey = JSON.stringify(targetIds);
   useEffect(() => {
-    if (idsKey) createLink(idsKey.split(','));
+    if (targetIds.length > 0) createLink(targetIds);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [idsKey]);
 

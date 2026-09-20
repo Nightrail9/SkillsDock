@@ -24,7 +24,7 @@ interface OnboardingModalProps {
   tools: ToolAdapter[];
   settings?: AppSettings;
   addToast: AddToastFn;
-  onSaveSettings?: (newSettings: AppSettings) => void;
+  onSaveSettings?: (newSettings: AppSettings) => Promise<boolean>;
   onClose: () => void;
 }
 
@@ -56,6 +56,18 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
       setDeployMethod(settings.distributionMethod === 'copy' ? 'copy' : 'symlink');
     }
   }, [settings]);
+
+  // 向导每次重新打开时，重置步骤与内部表单/迁移状态到初始值
+  useEffect(() => {
+    if (isOpen) {
+      setCurrentStep(1);
+      setMigrationDone(false);
+      setCustomPath(settings?.libraryPath || '');
+      setDeployMethod(settings?.distributionMethod === 'copy' ? 'copy' : 'symlink');
+      importMutation.reset();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -90,7 +102,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
 
   const handleSaveRepoSettings = () => {
     if (settings && onSaveSettings) {
-      onSaveSettings({
+      void onSaveSettings({
         ...settings,
         libraryPath: customPath.trim() || settings.libraryPath,
         distributionMethod: deployMethod,

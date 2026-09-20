@@ -64,6 +64,8 @@ export const SkillDetailModal: React.FC<SkillDetailModalProps> = ({
   const [tagInput, setTagInput] = useState('');
   const [isAddingTag, setIsAddingTag] = useState(false);
   const enabledTools = tools.filter((t) => t.isEnabled);
+  // 项目技能经 <project>/.claude/skills 与 <project>/skills 链接生效，不参与工具分发
+  const isProject = skill?.scope === 'project';
 
   // 打开详情时拉取真实 documentation / files（列表接口中这两个字段可为空）
   const detailQuery = useSkillDetail(skill?.id);
@@ -110,7 +112,7 @@ export const SkillDetailModal: React.FC<SkillDetailModalProps> = ({
               </span>
               <span className="font-mono text-xs px-2.5 py-0.5 rounded-lg bg-indigo-50 text-indigo-700 border border-indigo-200 flex items-center gap-1">
                 <GitBranch className="w-3 h-3 text-indigo-500" />
-                <span>SHA: {skill.currentCommit}</span>
+                <span>SHA: {skill.currentCommit || '-'}</span>
               </span>
               {skill.scope === 'global' ? (
                 <span className="inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-0.5 rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-200">
@@ -214,7 +216,9 @@ export const SkillDetailModal: React.FC<SkillDetailModalProps> = ({
                 <span>目标工具分发生效状态</span>
               </span>
               <span className="text-[11px] text-slate-400">
-                点击即可建立或移除符号链接
+                {isProject
+                  ? '项目技能经项目内 .claude/skills 链接生效，不参与工具分发'
+                  : '点击即可建立或移除符号链接'}
               </span>
             </div>
 
@@ -226,6 +230,32 @@ export const SkillDetailModal: React.FC<SkillDetailModalProps> = ({
               ) : (
                 enabledTools.map((tool) => {
                   const isDeployed = !!skill.deployedTools[tool.id];
+                  // 项目技能不参与工具分发，徽标仅作展示
+                  if (isProject) {
+                    return (
+                      <div
+                        key={tool.id}
+                        className={`p-3 rounded-2xl border text-left flex items-center justify-between cursor-default ${
+                          isDeployed
+                            ? 'bg-emerald-50/80 border-emerald-300 text-emerald-950 shadow-2xs font-semibold'
+                            : 'bg-slate-50 border-slate-200 text-slate-500'
+                        }`}
+                        title={`${tool.name}: 项目技能经项目内链接生效`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <ToolBrandIcon toolId={tool.id} size={18} />
+                          <span className="text-xs">{tool.name}</span>
+                        </div>
+                        <div
+                          className={`w-4 h-4 rounded-full flex items-center justify-center text-[10px] ${
+                            isDeployed ? 'bg-emerald-600 text-white' : 'border border-slate-300'
+                          }`}
+                        >
+                          {isDeployed && <Check className="w-2.5 h-2.5 stroke-[3]" />}
+                        </div>
+                      </div>
+                    );
+                  }
                   return (
                     <button
                       key={tool.id}
@@ -340,13 +370,37 @@ export const SkillDetailModal: React.FC<SkillDetailModalProps> = ({
                   }`}
                 >
                   <FolderTree className="w-3.5 h-3.5" />
-                  <span>文件清单 ({detail?.files.length ?? 0})</span>
+                  <span>文件清单 ({detailQuery.isError ? '-' : (detail?.files.length ?? 0)})</span>
                 </button>
               </div>
             </div>
 
             <div className="p-5 bg-white min-h-[220px] max-h-[360px] overflow-y-auto text-xs">
-              {activeTab === 'doc' ? (
+              {detailQuery.isError ? (
+                <div className="py-10 text-center space-y-3">
+                  <p className="text-rose-600 font-semibold">读取技能详情失败</p>
+                  <p className="text-slate-500 break-all">
+                    {detailQuery.error instanceof Error
+                      ? detailQuery.error.message
+                      : String(detailQuery.error)}
+                  </p>
+                  <div className="flex items-center justify-center gap-2 pt-1">
+                    <button
+                      onClick={() => detailQuery.refetch()}
+                      className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 transition-colors"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                      <span>重试</span>
+                    </button>
+                    <button
+                      onClick={onClose}
+                      className="px-3.5 py-1.5 rounded-xl text-xs font-semibold text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 transition-colors"
+                    >
+                      关闭
+                    </button>
+                  </div>
+                </div>
+              ) : activeTab === 'doc' ? (
                 detailQuery.isLoading ? (
                   <div className="py-10 text-center text-slate-400">正在读取 SKILL.md 文档...</div>
                 ) : detail?.documentation ? (

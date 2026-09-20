@@ -21,7 +21,7 @@ interface SettingsViewProps {
   settings: AppSettings;
   tools: ToolAdapter[];
   addToast: AddToastFn;
-  onSaveSettings: (newSettings: AppSettings) => void;
+  onSaveSettings: (newSettings: AppSettings) => Promise<boolean>;
   onOpenOnboarding: () => void;
 }
 
@@ -45,14 +45,17 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   /** 保存并即时生效 */
   const save = (next: AppSettings) => {
     setFormData(next);
-    onSaveSettings(next);
+    void onSaveSettings(next);
   };
 
-  const handleSave = (e: React.FormEvent) => {
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    onSaveSettings(formData);
-    setSavedStatus(true);
-    setTimeout(() => setSavedStatus(false), 3000);
+    // 仅后端保存成功时才展示成功横幅；失败由 App 侧 toast 提示
+    const ok = await onSaveSettings(formData);
+    if (ok) {
+      setSavedStatus(true);
+      setTimeout(() => setSavedStatus(false), 3000);
+    }
   };
 
   /** 中央库路径迁移：原生目录选择 → migrate_library（迁移中 loading，失败提示） */

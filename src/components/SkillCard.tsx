@@ -77,6 +77,8 @@ export const SkillCard: React.FC<SkillCardProps> = ({
 }) => {
   const enabledTools = tools.filter((t) => t.isEnabled);
   const deployedCount = enabledTools.filter((t) => !!skill.deployedTools[t.id]).length;
+  // 项目技能经 <project>/.claude/skills 与 <project>/skills 链接生效，不参与工具分发
+  const isProject = skill.scope === 'project';
 
   return (
     <div
@@ -112,7 +114,7 @@ export const SkillCard: React.FC<SkillCardProps> = ({
               {/* Version & Git Commit Hash */}
               <span className="inline-flex items-center gap-1 font-mono text-[10px] px-2 py-0.5 rounded-md bg-slate-100 text-slate-600 border border-slate-200/70">
                 <GitBranch className="w-2.5 h-2.5 text-slate-400" />
-                <span>{skill.currentCommit}</span>
+                <span>{skill.currentCommit || '-'}</span>
               </span>
 
               {/* Scope Badge */}
@@ -222,7 +224,9 @@ export const SkillCard: React.FC<SkillCardProps> = ({
           <Layers className="w-3.5 h-3.5 text-slate-400" />
           <span>分发状态:</span>
           <span className="font-semibold text-slate-700">
-            {deployedCount} / {enabledTools.length} 工具已启用
+            {isProject
+              ? '经项目内 .claude/skills 链接生效'
+              : `${deployedCount} / ${enabledTools.length} 工具已启用`}
           </span>
         </div>
 
@@ -233,6 +237,28 @@ export const SkillCard: React.FC<SkillCardProps> = ({
           ) : (
             enabledTools.map((tool) => {
               const isDeployed = !!skill.deployedTools[tool.id];
+              // 项目技能不参与工具分发，徽标仅作展示
+              if (isProject) {
+                return (
+                  <span
+                    key={tool.id}
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs border cursor-default ${
+                      isDeployed
+                        ? 'bg-emerald-50/80 border-emerald-300/90 text-emerald-950 font-medium shadow-2xs'
+                        : 'bg-slate-50 border-slate-200/80 text-slate-400'
+                    }`}
+                    title={`${tool.name}: 项目技能经项目内链接生效`}
+                  >
+                    <ToolBrandIcon toolId={tool.id} size={15} />
+                    <span className="text-[11px] font-medium">{tool.name}</span>
+                    <span
+                      className={`w-1.5 h-1.5 rounded-full ${
+                        isDeployed ? 'bg-emerald-600' : 'bg-slate-300'
+                      }`}
+                    />
+                  </span>
+                );
+              }
               return (
                 <button
                   key={tool.id}

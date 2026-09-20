@@ -12,6 +12,8 @@ interface BatchBarProps {
   selectedCount: number;
   totalCount?: number;
   tools: ToolAdapter[];
+  /** 任一批量 mutation 进行中时为 true，所有批量按钮禁用防重入 */
+  isPending?: boolean;
   onClearSelection: () => void;
   onSelectAll?: () => void;
   onBatchDeployTool: (toolId: ToolId, enable: boolean) => void;
@@ -23,6 +25,7 @@ interface BatchBarProps {
 export const BatchBar: React.FC<BatchBarProps> = ({
   selectedCount,
   tools,
+  isPending = false,
   onClearSelection,
   onBatchDeployTool,
   onBatchUninstall,
@@ -49,7 +52,8 @@ export const BatchBar: React.FC<BatchBarProps> = ({
         <div className="relative">
           <button
             onClick={() => setShowDeployDropdown(!showDeployDropdown)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition-all border ${
+            disabled={isPending}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition-all border disabled:opacity-60 ${
               showDeployDropdown
                 ? 'bg-indigo-600 text-white border-indigo-500 shadow-xs'
                 : 'bg-slate-800 hover:bg-slate-700/90 text-slate-200 border-slate-700/80'
@@ -78,13 +82,15 @@ export const BatchBar: React.FC<BatchBarProps> = ({
                     <div className="flex items-center gap-1.5">
                       <button
                         onClick={() => onBatchDeployTool(t.id, true)}
-                        className="px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-700 hover:bg-emerald-100 text-[11px] font-semibold transition-colors"
+                        disabled={isPending}
+                        className="px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-700 hover:bg-emerald-100 disabled:opacity-60 text-[11px] font-semibold transition-colors"
                       >
                         启用
                       </button>
                       <button
                         onClick={() => onBatchDeployTool(t.id, false)}
-                        className="px-2.5 py-1 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 text-[11px] font-semibold transition-colors"
+                        disabled={isPending}
+                        className="px-2.5 py-1 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 disabled:opacity-60 text-[11px] font-semibold transition-colors"
                       >
                         停用
                       </button>
@@ -100,7 +106,8 @@ export const BatchBar: React.FC<BatchBarProps> = ({
         {onBatchShare && (
           <button
             onClick={onBatchShare}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 transition-colors border border-slate-700/80"
+            disabled={isPending}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 transition-colors border border-slate-700/80 disabled:opacity-60"
           >
             <Share2 className="w-3.5 h-3.5 text-cyan-400" />
             <span>导出分享链接</span>
@@ -110,7 +117,8 @@ export const BatchBar: React.FC<BatchBarProps> = ({
         {/* Batch Uninstall */}
         <button
           onClick={onBatchUninstall}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-950/80 hover:bg-rose-900 active:bg-rose-950 text-rose-200 transition-colors border border-rose-800/60 font-semibold"
+          disabled={isPending}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-950/80 hover:bg-rose-900 active:bg-rose-950 text-rose-200 transition-colors border border-rose-800/60 font-semibold disabled:opacity-60"
         >
           <Trash2 className="w-3.5 h-3.5 text-rose-400" />
           <span>批量卸载</span>

@@ -5,6 +5,8 @@ import { Skill } from '../types';
 interface TagEditModalProps {
   skill: Skill | null;
   allAvailableTags?: string[];
+  /** set_skill_tags mutation 进行中时为 true，添加/移除按钮禁用防竞态双写 */
+  isPending?: boolean;
   onClose: () => void;
   onAddTag: (skillId: string, tag: string) => void;
   onRemoveTag: (skillId: string, tag: string) => void;
@@ -13,6 +15,7 @@ interface TagEditModalProps {
 export const TagEditModal: React.FC<TagEditModalProps> = ({
   skill,
   allAvailableTags = [],
+  isPending = false,
   onClose,
   onAddTag,
   onRemoveTag,
@@ -93,7 +96,7 @@ export const TagEditModal: React.FC<TagEditModalProps> = ({
               </div>
               <button
                 type="submit"
-                disabled={!newTagInput.trim()}
+                disabled={!newTagInput.trim() || isPending}
                 className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold flex items-center gap-1 shadow-xs transition-colors"
               >
                 <Plus className="w-3.5 h-3.5" />
@@ -118,7 +121,8 @@ export const TagEditModal: React.FC<TagEditModalProps> = ({
                     key={tag}
                     type="button"
                     onClick={() => onAddTag(skill.id, tag)}
-                    className="inline-flex items-center gap-1 text-xs bg-white hover:bg-indigo-50 hover:border-indigo-300 hover:text-indigo-700 text-slate-700 px-2.5 py-1 rounded-lg border border-slate-200 transition-all shadow-2xs group cursor-pointer font-medium"
+                    disabled={isPending}
+                    className="inline-flex items-center gap-1 text-xs bg-white hover:bg-indigo-50 hover:border-indigo-300 hover:text-indigo-700 text-slate-700 px-2.5 py-1 rounded-lg border border-slate-200 transition-all shadow-2xs group cursor-pointer font-medium disabled:opacity-50 disabled:cursor-not-allowed"
                     title={`点击将 #${tag} 关联到当前技能`}
                   >
                     <Plus className="w-3 h-3 text-slate-400 group-hover:text-indigo-600 transition-colors" />
@@ -150,7 +154,8 @@ export const TagEditModal: React.FC<TagEditModalProps> = ({
                     <button
                       type="button"
                       onClick={() => onRemoveTag(skill.id, tag)}
-                      className="ml-1 text-indigo-400 hover:text-rose-600 transition-colors p-0.5"
+                      disabled={isPending}
+                      className="ml-1 text-indigo-400 hover:text-rose-600 transition-colors p-0.5 disabled:opacity-50 disabled:cursor-not-allowed"
                       title="移除标签"
                     >
                       <X className="w-3 h-3" />

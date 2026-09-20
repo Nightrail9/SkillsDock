@@ -173,7 +173,7 @@ export const DiscoveryView: React.FC<DiscoveryViewProps> = ({
       subpath: entry.subpath,
       registryId: entry.registryId,
       tags: entry.tags ?? [],
-      latestCommit: entry.branch || 'latest',
+      latestCommit: entry.branch ?? '',
       verified: false,
       isInstalled: isItemInstalled({ id: entry.registryId ?? '', name, repo: entry.repo, registryId: entry.registryId }),
     });

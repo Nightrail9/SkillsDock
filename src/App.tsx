@@ -20,6 +20,7 @@ import {
   SkillDeployMethod,
   AddToastFn,
   AppSettings,
+  AppState,
 } from './types';
 import { HeaderBar } from './components/HeaderBar';
 import { Sidebar } from './components/Sidebar';
@@ -206,6 +207,12 @@ export default function App() {
     });
   }, [skills, selectedScope, selectedTags, searchQuery]);
 
+  // 当前筛选下可见的选中项：选中态可跨筛选/标签页保留，但批量动作严格作用于可见交集
+  const visibleSelectedSkills = useMemo(
+    () => filteredSkills.filter((s) => selectedSkillIds.has(s.id)),
+    [filteredSkills, selectedSkillIds],
+  );
+
   const updateAvailableCount = skills.filter((s) => s.hasUpdate).length;
 
   // ===== Handlers =====
@@ -272,7 +279,7 @@ export default function App() {
   // Batch deploy / retract（串行执行，汇总成功/失败）
   const handleBatchDeployTool = (toolId: ToolId, enable: boolean) => {
     const targetTool = tools.find((t) => t.id === toolId);
-    const ids = Array.from(selectedSkillIds);
+    const ids = visibleSelectedSkills.map((s) => s.id);
     if (ids.length === 0) return;
 
     bulkToggleMutation.mutate(
@@ -442,6 +449,10 @@ export default function App() {
           setInstallItem(null);
           setInstallError(null);
           setCurrentTab('installed');
+          // 重置筛选，确保新装技能在列表中立即可见
+          setSearchQuery('');
+          setSelectedScope('all');
+          setSelectedTags([]);
           addToast(
             'success',
             `技能「${installed.displayName}」安装完成`,
@@ -462,15 +473,34 @@ export default function App() {
     );
   };
 
+  // 标签增删：乐观更新缓存中的 tags，失败回滚快照，杜绝连点竞态双写
+  const applySkillTagsOptimistic = (skillId: string, nextTags: string[]) => {
+    const prevState = queryClient.getQueryData<AppState>(APP_STATE_KEY);
+    queryClient.setQueryData<AppState>(APP_STATE_KEY, (old) => {
+      if (!old) return old;
+      return {
+        ...old,
+        skills: old.skills.map((s) => (s.id === skillId ? { ...s, tags: nextTags } : s)),
+      };
+    });
+    return prevState;
+  };
+
   // Add tag to skill（set_skill_tags 整体替换语义）
   const handleAddTagToSkill = (skillId: string, newTag: string) => {
     const skill = skills.find((s) => s.id === skillId);
     if (!skill || skill.tags.includes(newTag)) return;
+    const nextTags = [...skill.tags, newTag];
+    const prevState = applySkillTagsOptimistic(skillId, nextTags);
     setTagsMutation.mutate(
-      { ids: [skillId], tags: [...skill.tags, newTag] },
+      { ids: [skillId], tags: nextTags },
       {
         onSuccess: () => addToast('success', '标签已添加', `已为技能添加 #${newTag}`),
-        onError: (err) => addToast('error', '标签添加失败', errorToString(err)),
+        onError: (err) => {
+          if (prevState) queryClient.setQueryData(APP_STATE_KEY, prevState);
+          addToast('error', '标签添加失败', errorToString(err));
+        },
+        onSettled: () => queryClient.invalidateQueries({ queryKey: APP_STATE_KEY }),
       },
     );
   };
@@ -478,26 +508,34 @@ export default function App() {
   const handleRemoveTagFromSkill = (skillId: string, tagToRemove: string) => {
     const skill = skills.find((s) => s.id === skillId);
     if (!skill) return;
+    const nextTags = skill.tags.filter((t) => t !== tagToRemove);
+    const prevState = applySkillTagsOptimistic(skillId, nextTags);
     setTagsMutation.mutate(
-      { ids: [skillId], tags: skill.tags.filter((t) => t !== tagToRemove) },
+      { ids: [skillId], tags: nextTags },
       {
         onSuccess: () => addToast('info', '标签已移除', `已移除标签 #${tagToRemove}`),
-        onError: (err) => addToast('error', '标签移除失败', errorToString(err)),
+        onError: (err) => {
+          if (prevState) queryClient.setQueryData(APP_STATE_KEY, prevState);
+          addToast('error', '标签移除失败', errorToString(err));
+        },
+        onSettled: () => queryClient.invalidateQueries({ queryKey: APP_STATE_KEY }),
       },
     );
   };
 
   // Save settings（设置页 / 新手引导共用）；分发方式变更时提示一键重部署
-  const handleSaveSettings = (newSettings: AppSettings) => {
-    updateSettingsMutation.mutate(newSettings, {
-      onSuccess: (affected) => {
-        addToast('success', '偏好设置已保存并即时生效');
-        if (affected.length > 0) {
-          setRedeployPromptIds(affected);
-        }
-      },
-      onError: (err) => addToast('error', '设置保存失败', errorToString(err)),
-    });
+  const handleSaveSettings = async (newSettings: AppSettings): Promise<boolean> => {
+    try {
+      const affected = await updateSettingsMutation.mutateAsync(newSettings);
+      addToast('success', '偏好设置已保存并即时生效');
+      if (affected.length > 0) {
+        setRedeployPromptIds(affected);
+      }
+      return true;
+    } catch (err) {
+      addToast('error', '设置保存失败', errorToString(err));
+      return false;
+    }
   };
 
   // 一键重部署：按新分发方式重建项目技能的链接/副本
@@ -784,17 +822,19 @@ export default function App() {
 
       {/* Floating Bottom Batch Operations Bar */}
       <BatchBar
-        selectedCount={selectedSkillIds.size}
+        selectedCount={visibleSelectedSkills.length}
         totalCount={filteredSkills.length}
         tools={tools}
+        isPending={
+          bulkToggleMutation.isPending ||
+          bulkUninstallMutation.isPending ||
+          bulkUpdateMutation.isPending
+        }
         onClearSelection={handleClearSelection}
         onSelectAll={handleSelectAll}
         onBatchDeployTool={handleBatchDeployTool}
         onBatchShare={() => setShareTarget({ isBatch: true })}
-        onBatchUninstall={() => {
-          const selected = skills.filter((s) => selectedSkillIds.has(s.id));
-          requestUninstall(selected);
-        }}
+        onBatchUninstall={() => requestUninstall(visibleSelectedSkills)}
       />
 
       {/* Modals & Dialogs */}
@@ -831,11 +871,7 @@ export default function App() {
       {shareTarget && (
         <ShareModal
           skill={shareTarget.skill || null}
-          selectedSkills={
-            shareTarget.isBatch
-              ? skills.filter((s) => selectedSkillIds.has(s.id))
-              : []
-          }
+          selectedSkills={shareTarget.isBatch ? visibleSelectedSkills : []}
           onClose={() => setShareTarget(null)}
           addToast={addToast}
         />
@@ -846,6 +882,7 @@ export default function App() {
         <TagEditModal
           skill={tagEditingSkill}
           allAvailableTags={allTags.map((t) => t.name)}
+          isPending={setTagsMutation.isPending}
           onClose={() => setTagEditingSkillId(null)}
           onAddTag={handleAddTagToSkill}
           onRemoveTag={handleRemoveTagFromSkill}
@@ -889,15 +926,17 @@ export default function App() {
         </div>
       )}
 
-      {/* 6. Onboarding & Migration Modal */}
-      <OnboardingModal
-        isOpen={showOnboarding}
-        tools={tools}
-        settings={settings}
-        addToast={addToast}
-        onSaveSettings={handleSaveSettings}
-        onClose={handleCloseOnboarding}
-      />
+      {/* 6. Onboarding & Migration Modal（条件挂载，重开时内部状态随之重置） */}
+      {showOnboarding && (
+        <OnboardingModal
+          isOpen={showOnboarding}
+          tools={tools}
+          settings={settings}
+          addToast={addToast}
+          onSaveSettings={handleSaveSettings}
+          onClose={handleCloseOnboarding}
+        />
+      )}
 
       {/* Toast 通知容器（最顶层） */}
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />

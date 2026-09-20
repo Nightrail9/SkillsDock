@@ -14,6 +14,7 @@ import {
 import { DiscoverySkillItem } from '../types';
 import { ToolAdapter, ProjectScope, ToolId, ScopeType } from '../types';
 import { ToolBrandIcon } from './icons/BrandIcons';
+import { useAppState } from '../hooks/useAppState';
 
 interface InstallModalProps {
   item: DiscoverySkillItem | null;
@@ -42,6 +43,9 @@ export const InstallModal: React.FC<InstallModalProps> = ({
   isInstalling = false,
   installError = null,
 }) => {
+  // 应用设置（react-query 缓存；数据未就绪时回落默认行为）
+  const { data: appState } = useAppState();
+
   const [step, setStep] = useState<'config' | 'installing'>('config');
   const [scope, setScope] = useState<ScopeType>('global');
   const [projectId, setProjectId] = useState<string>(projects[0]?.id || '');
@@ -49,7 +53,10 @@ export const InstallModal: React.FC<InstallModalProps> = ({
   const [selectedTools, setSelectedTools] = useState<Record<ToolId, boolean>>(() =>
     Object.fromEntries(tools.filter((t) => t.isEnabled).map((t) => [t.id, true])),
   );
-  const [deployMethod, setDeployMethod] = useState<'symlink' | 'copy'>('symlink');
+  // 部署方式默认值取自全局设置，设置未就绪时回落 symlink
+  const [deployMethod, setDeployMethod] = useState<'symlink' | 'copy'>(
+    () => appState?.settings?.distributionMethod ?? 'symlink',
+  );
 
   // 安装失败时回到配置页以便调整重试
   useEffect(() => {
@@ -77,6 +84,9 @@ export const InstallModal: React.FC<InstallModalProps> = ({
   };
 
   const handleStartInstall = () => {
+    // 防护：安装进行中或项目作用域未选项目时不允许提交
+    if (isInstalling) return;
+    if (scope === 'project' && !projectId) return;
     setStep('installing');
     onConfirmInstall({
       item,
@@ -143,9 +153,14 @@ export const InstallModal: React.FC<InstallModalProps> = ({
                 <div>
                   <div className="font-bold text-slate-900 text-sm flex items-center gap-2">
                     <span>{item.displayName}</span>
-                    <span className="font-mono text-[10px] bg-slate-200/80 text-slate-700 px-2 py-0.5 rounded-md">
-                      commit {item.latestCommit}
-                    </span>
+                    {/* latestCommit 实际可能是分支名：仅 7-40 位十六进制 SHA 才展示为 commit，分支名按分支展示，空值不渲染 */}
+                    {item.latestCommit && (
+                      <span className="font-mono text-[10px] bg-slate-200/80 text-slate-700 px-2 py-0.5 rounded-md">
+                        {/^[0-9a-f]{7,40}$/i.test(item.latestCommit)
+                          ? `commit ${item.latestCommit}`
+                          : `分支 ${item.latestCommit}`}
+                      </span>
+                    )}
                   </div>
                   <p className="text-slate-600 mt-1 text-xs leading-relaxed">{item.description}</p>
                 </div>
@@ -241,6 +256,12 @@ export const InstallModal: React.FC<InstallModalProps> = ({
                 <label className="font-bold text-slate-800 block text-xs">
                   2. 选择启用的 AI 工具
                 </label>
+                {scope === 'project' ? (
+                  // 项目作用域下后端不做工具部署（仅记录偏好），此处仅作说明
+                  <div className="p-3 rounded-2xl border border-dashed border-slate-300 bg-slate-50/70 text-[11px] text-slate-500 leading-relaxed">
+                    项目技能将直接通过项目内 .claude/skills 与 skills 目录链接生效，无需选择工具。
+                  </div>
+                ) : (
                 <div className="grid grid-cols-2 gap-2.5">
                   {tools.filter((t) => t.isEnabled).length === 0 ? (
                     <div className="col-span-full py-3 text-center text-xs text-slate-400 bg-slate-50 rounded-xl border border-dashed border-slate-200">
@@ -275,6 +296,7 @@ export const InstallModal: React.FC<InstallModalProps> = ({
                     })
                   )}
                 </div>
+                )}
               </div>
 
               {/* Distribution Method Confirmation */}
@@ -309,10 +331,18 @@ export const InstallModal: React.FC<InstallModalProps> = ({
             </button>
             <button
               onClick={handleStartInstall}
-              className="px-5 py-2 rounded-xl text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 transition-colors shadow-xs flex items-center gap-1.5"
+              disabled={isInstalling || (scope === 'project' && !projectId)}
+              className="px-5 py-2 rounded-xl text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 transition-colors shadow-xs flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-indigo-600"
+              title={scope === 'project' && !projectId ? '请先选择目标项目' : undefined}
             >
-              <span>确认安装并启用</span>
-              <ArrowRight className="w-3.5 h-3.5" />
+              {isInstalling ? (
+                <span>正在安装...</span>
+              ) : (
+                <>
+                  <span>确认安装并启用</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </>
+              )}
             </button>
           </div>
         )}

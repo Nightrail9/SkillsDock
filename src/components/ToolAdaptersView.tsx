@@ -33,6 +33,8 @@ export const ToolAdaptersView: React.FC<ToolAdaptersViewProps> = ({
   const [customDesc, setCustomDesc] = useState('');
   const [customPath, setCustomPath] = useState('');
   const [isValidating, setIsValidating] = useState(false);
+  // 待确认移除的工具（点击「移除工具」后先弹确认框）
+  const [toolPendingDelete, setToolPendingDelete] = useState<ToolAdapter | null>(null);
 
   const addToolMutation = useAddToolAdapter();
   const updateToolMutation = useUpdateToolAdapter();
@@ -86,10 +88,12 @@ export const ToolAdaptersView: React.FC<ToolAdaptersViewProps> = ({
     );
   };
 
+  /** 确认后执行移除：后端会同步清除该工具在全部分发状态中的记录 */
   const handleDeleteTool = (tool: ToolAdapter) => {
     deleteToolMutation.mutate(tool.id, {
       onSuccess: () => addToast('info', `已移除自定义工具适配「${tool.name}」`),
       onError: (err) => addToast('error', '移除工具失败', errorToString(err)),
+      onSettled: () => setToolPendingDelete(null),
     });
   };
 
@@ -260,7 +264,7 @@ export const ToolAdaptersView: React.FC<ToolAdaptersViewProps> = ({
 
               {!tool.isBuiltin && (
                 <button
-                  onClick={() => handleDeleteTool(tool)}
+                  onClick={() => setToolPendingDelete(tool)}
                   disabled={isBusy}
                   className="text-rose-600 hover:text-rose-800 font-semibold flex items-center gap-1 text-xs hover:underline disabled:opacity-50"
                 >
@@ -353,6 +357,58 @@ export const ToolAdaptersView: React.FC<ToolAdaptersViewProps> = ({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Remove Tool Confirm Modal */}
+      {toolPendingDelete && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4 animate-in fade-in duration-150"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !deleteToolMutation.isPending) {
+              setToolPendingDelete(null);
+            }
+          }}
+        >
+          <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 w-full max-w-md p-6 space-y-4 animate-in zoom-in-95 duration-150">
+            <div className="flex items-start gap-3.5">
+              <div className="w-10 h-10 rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center shrink-0 border border-rose-200">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-slate-900">
+                  确认移除工具适配「{toolPendingDelete.name}」？
+                </h3>
+                <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                  {toolPendingDelete.installedSkillsCount > 0
+                    ? `该工具将从 ${toolPendingDelete.installedSkillsCount} 个技能的分发状态中移除，已建立的链接映射会被同步清除。`
+                    : '移除后，该工具在所有技能中的分发状态与链接映射将被同步清除，且不再参与跨工具同步。'}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setToolPendingDelete(null)}
+                disabled={deleteToolMutation.isPending}
+                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100 transition-colors disabled:opacity-50"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDeleteTool(toolPendingDelete)}
+                disabled={deleteToolMutation.isPending}
+                className="px-5 py-2 bg-rose-600 hover:bg-rose-700 active:bg-rose-800 disabled:opacity-60 text-white rounded-xl text-xs font-bold shadow-xs transition-colors flex items-center gap-1.5"
+              >
+                {deleteToolMutation.isPending && (
+                  <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                )}
+                <span>{deleteToolMutation.isPending ? '正在移除...' : '确认移除'}</span>
+              </button>
+            </div>
           </div>
         </div>
       )}
