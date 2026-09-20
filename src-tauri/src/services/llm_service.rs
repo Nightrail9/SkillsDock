@@ -205,11 +205,30 @@ impl LlmService {
                         && (response.status() == StatusCode::TOO_MANY_REQUESTS
                             || response.status().is_server_error()) =>
                 {
+                    log::warn!(
+                        "LLM 请求返回 {}，1 秒后重试: {endpoint}",
+                        response.status()
+                    );
                     tokio::time::sleep(Duration::from_secs(1)).await;
                 }
-                Ok(response) => return Err(anyhow!("LLM 请求失败（HTTP {}）", response.status())),
-                Err(_) if attempt == 0 => tokio::time::sleep(Duration::from_secs(1)).await,
-                Err(_) => return Err(anyhow!("LLM 请求失败，请检查网络和 Base URL")),
+                Ok(response) => {
+                    // 提供商通常把真实原因放在响应体（余额不足/模型不存在/参数不支持等），
+                    // 截断后透出，避免只看到状态码无法定位
+                    let status = response.status();
+                    let body = response.text().await.unwrap_or_default();
+                    let snippet: String = body.chars().take(300).collect();
+                    log::warn!("LLM 请求失败 HTTP {status}: {endpoint}; body={snippet}");
+                    return Err(anyhow!("LLM 请求失败（HTTP {status}）：{snippet}"));
+                }
+                Err(err) => {
+                    // 透出底层原因（DNS/TLS/超时/代理），只记录 URL 不记录密钥
+                    log::warn!("LLM 请求发送失败: {endpoint}; err={err}");
+                    if attempt == 0 {
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    } else {
+                        return Err(anyhow!("LLM 请求失败：{err}（Base URL: {base_url}）"));
+                    }
+                }
             }
         }
         Err(anyhow!("LLM 请求失败，请稍后重试"))
