@@ -13,7 +13,9 @@ import {
   Bot,
   KeyRound,
   PlugZap,
-  WandSparkles
+  WandSparkles,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 import { AppSettings, ToolAdapter, AddToastFn, LlmConfigInput } from '../types';
 import { useMigrateLibrary } from '../hooks/useSettings';
@@ -21,6 +23,7 @@ import { useAppState, useInvalidateAppState } from '../hooks/useAppState';
 import { settingsApi } from '../lib/api';
 import { collapseHomePath } from '../lib/utils/pathDisplay';
 import { errorToString } from '../lib/errors/skillErrorParser';
+import { readLlmApiKey, writeLlmApiKey } from '../lib/llmKey';
 
 interface SettingsViewProps {
   settings: AppSettings;
@@ -44,12 +47,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     baseUrl: '',
     model: '',
   });
-  const [apiKey, setApiKey] = useState('');
+  // API Key 只保存在当前客户端（localStorage），不写数据库、不存系统凭据库；
+  // 个人本地工具，Key 随手填写、眼睛切换可见性，按调用传给后端
+  const [apiKey, setApiKey] = useState(() => readLlmApiKey());
+  const [showKey, setShowKey] = useState(false);
   const [llmBusy, setLlmBusy] = useState<'save' | 'test' | 'process' | 'clear' | null>(null);
   const [llmMessage, setLlmMessage] = useState<string | null>(null);
-  // 本次会话内是否成功保存过 Key（保存成功后立即解锁批量生成，
-  // 不依赖首屏快照的 apiKeyConfigured——快照刷新有任何延迟都不影响使用）
-  const [keySaved, setKeySaved] = useState(false);
   const migrateMutation = useMigrateLibrary();
   const appState = useAppState().data;
   const invalidateAppState = useInvalidateAppState();
@@ -70,20 +73,27 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     });
   }, [llmConfig]);
 
-  const llmInput = (clearApiKey = false): LlmConfigInput => ({
+  const llmInput = (): LlmConfigInput => ({
     ...llmForm,
     apiKey: apiKey.trim() || undefined,
-    clearApiKey,
   });
+
+  /** Key 一经输入即持久化到客户端 localStorage（仅本机，不写数据库/凭据库） */
+  const updateApiKey = (value: string) => {
+    setApiKey(value);
+    writeLlmApiKey(value);
+  };
+
+  const keyReady = apiKey.trim().length > 0;
 
   const saveLlm = async () => {
     setLlmBusy('save');
     setLlmMessage(null);
     try {
       await settingsApi.saveLlmConfig(llmInput());
-      setApiKey('');
-      setKeySaved(true);
-      setLlmMessage('模型配置已保存；API Key 仅保存于系统凭据库。');
+      setLlmMessage(
+        '模型配置已保存（Base URL / 模型 / 提供商）。API Key 只保存在当前客户端，不写入数据库或系统凭据库。',
+      );
       await invalidateAppState();
     } catch (err) {
       setLlmMessage(errorToString(err));
@@ -97,12 +107,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setLlmMessage(null);
     try {
       const result = await settingsApi.testLlmConnection(llmInput());
-      const keyPending = !(llmConfig?.apiKeyConfigured || keySaved);
-      setLlmMessage(
-        keyPending
-          ? `${result.message}：${result.model}（注意：Key 尚未保存，仅对本次测试有效；使用「生成中文简介」前请先点「保存模型配置」）`
-          : `${result.message}：${result.model}`,
-      );
+      setLlmMessage(`${result.message}：${result.model}`);
     } catch (err) {
       setLlmMessage(`连接失败：${errorToString(err)}`);
     } finally {
@@ -110,27 +115,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     }
   };
 
-  const clearLlmKey = async () => {
-    setLlmBusy('clear');
-    setLlmMessage(null);
-    try {
-      await settingsApi.saveLlmConfig(llmInput(true));
-      setApiKey('');
-      setKeySaved(false);
-      setLlmMessage('API Key 已从系统凭据库清除。');
-      await invalidateAppState();
-    } catch (err) {
-      setLlmMessage(errorToString(err));
-    } finally {
-      setLlmBusy(null);
-    }
+  const clearLlmKey = () => {
+    updateApiKey('');
+    setLlmMessage('已清除当前客户端保存的 API Key。');
   };
 
   const processDescriptions = async () => {
     setLlmBusy('process');
     setLlmMessage(null);
     try {
-      const result = await settingsApi.processAllSkillDescriptions();
+      const result = await settingsApi.processAllSkillDescriptions(apiKey.trim());
       const failed = result.failures.length;
       setLlmMessage(
         failed === 0
@@ -437,21 +431,42 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             <input value={llmForm.baseUrl} onChange={(e) => setLlmForm({ ...llmForm, baseUrl: e.target.value })} placeholder="https://api.example.com/v1" className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-mono focus:bg-white focus:ring-2 focus:ring-indigo-500/20" />
           </label>
           <label className="block space-y-1.5">
-            <span className="text-xs font-semibold text-slate-700 flex items-center gap-1.5"><KeyRound className="w-3.5 h-3.5" />API Key {llmConfig?.apiKeyConfigured || keySaved ? '（已保存；留空则不变）' : '（未保存）'}</span>
-            <input type="password" value={apiKey} onChange={(e) => { setApiKey(e.target.value); setKeySaved(false); }} placeholder="仅写入系统凭据库，不会再次显示" autoComplete="new-password" className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-mono focus:bg-white focus:ring-2 focus:ring-indigo-500/20" />
+            <span className="text-xs font-semibold text-slate-700 flex items-center gap-1.5"><KeyRound className="w-3.5 h-3.5" />API Key {keyReady ? '（已保存在当前客户端）' : '（未填写）'}</span>
+            <div className="relative">
+              <input
+                type={showKey ? 'text' : 'password'}
+                value={apiKey}
+                onChange={(e) => updateApiKey(e.target.value)}
+                placeholder="sk-..."
+                autoComplete="new-password"
+                className="w-full pr-10 p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-mono focus:bg-white focus:ring-2 focus:ring-indigo-500/20"
+              />
+              <button
+                type="button"
+                onClick={() => setShowKey((v) => !v)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100"
+                title={showKey ? '隐藏 API Key' : '显示 API Key'}
+                aria-label={showKey ? '隐藏 API Key' : '显示 API Key'}
+              >
+                {showKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+              </button>
+            </div>
+            <span className="block text-[11px] text-slate-400 leading-relaxed">
+              仅保存在当前客户端（浏览器本地存储），不写入数据库或系统凭据库；可点右侧眼睛随时查看。
+            </span>
           </label>
           <div className="flex flex-wrap gap-2">
             <button type="button" onClick={saveLlm} disabled={llmBusy !== null} className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white text-xs font-bold">{llmBusy === 'save' ? '保存中...' : '保存模型配置'}</button>
             <button type="button" onClick={testLlm} disabled={llmBusy !== null} className="px-3.5 py-2 rounded-xl border border-slate-300 hover:bg-slate-50 disabled:opacity-60 text-slate-700 text-xs font-bold inline-flex items-center gap-1.5"><PlugZap className="w-3.5 h-3.5" />{llmBusy === 'test' ? '测试中...' : '测试连接'}</button>
-            {llmConfig?.apiKeyConfigured && <button type="button" onClick={clearLlmKey} disabled={llmBusy !== null} className="px-3.5 py-2 rounded-xl border border-rose-200 hover:bg-rose-50 disabled:opacity-60 text-rose-700 text-xs font-bold">清除 API Key</button>}
+            {keyReady && <button type="button" onClick={clearLlmKey} className="px-3.5 py-2 rounded-xl border border-rose-200 hover:bg-rose-50 disabled:opacity-60 text-rose-700 text-xs font-bold">清除 Key</button>}
             <button
               type="button"
               onClick={processDescriptions}
-              disabled={llmBusy !== null || !(llmConfig?.apiKeyConfigured || keySaved)}
+              disabled={llmBusy !== null || !keyReady}
               title={
-                llmConfig?.apiKeyConfigured || keySaved
+                keyReady
                   ? '用当前模型把全部已安装技能的描述批量转换为 25–40 个汉字的中文简介'
-                  : '请先点击「保存模型配置」：API Key 存入系统凭据库后才能使用（仅「测试连接」接受未保存的 Key）'
+                  : '请先在上方填写 API Key（仅保存在当前客户端，不写入数据库或系统凭据库）'
               }
               className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 disabled:opacity-60 text-white text-xs font-bold inline-flex items-center gap-1.5"
             >
@@ -459,7 +474,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             </button>
           </div>
           <p className="text-[11px] text-slate-400 leading-relaxed">
-            「生成中文简介」：用上方配置的模型，将全部已安装技能的英文描述翻译、中文描述压缩为 25–40 个汉字的中文简介，展示在技能卡片与详情页。需先「保存模型配置」；处理中请保持页面打开。
+            「生成中文简介」：用上方配置的模型，将全部已安装技能的英文描述翻译、中文描述压缩为 25–40 个汉字的中文简介，展示在技能卡片与详情页。需先填写 API Key 并「保存模型配置」；处理中请保持页面打开。
           </p>
           {llmMessage && <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 whitespace-pre-wrap">{llmMessage}</div>}
         </div>

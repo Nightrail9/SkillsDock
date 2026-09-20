@@ -229,8 +229,11 @@ export const settingsApi = {
     return invokeCommand('test_llm_connection', { input });
   },
 
-  processAllSkillDescriptions(): Promise<DescriptionProcessingResult> {
-    return invokeCommand('process_all_skill_descriptions');
+  processAllSkillDescriptions(apiKey: string): Promise<DescriptionProcessingResult> {
+    return invokeCommand('process_all_skill_descriptions', { apiKey });
+  },
+  processSkillDescriptions(ids: string[], apiKey: string): Promise<DescriptionProcessingResult> {
+    return invokeCommand('process_skill_descriptions', { ids, apiKey });
   },
 };
 

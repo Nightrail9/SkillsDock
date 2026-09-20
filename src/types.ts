@@ -101,16 +101,14 @@ export interface LlmConfig {
   providerName: string;
   baseUrl: string;
   model: string;
-  apiKeyConfigured: boolean;
 }
 
 export interface LlmConfigInput {
   providerName: string;
   baseUrl: string;
   model: string;
-  /** 仅用于本次 IPC 写入，读取配置时永远为空。 */
+  /** 仅用于当次 IPC 调用（测试连接/生成简介）；不落数据库、不存凭据库。 */
   apiKey?: string;
-  clearApiKey: boolean;
 }
 
 export interface LlmConnectionTest {

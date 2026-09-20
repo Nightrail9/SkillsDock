@@ -4,7 +4,6 @@
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
-use keyring::Entry;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -15,8 +14,8 @@ use crate::types::{
     LlmConnectionTest, SkillRecord,
 };
 
-const KEYRING_SERVICE: &str = "skilldock";
-const KEYRING_ACCOUNT: &str = "llm-api-key";
+// API Key 不落任何持久层（数据库/凭据库均不存）：由前端在会话内持有并按调用传入。
+// 本项目为个人本地工具，Key 仅在客户端输入框（可切换可见性）与 IPC 参数中流转。
 const STATUS_READY: &str = "ready";
 const STATUS_FAILED: &str = "failed";
 const REQUEST_TIMEOUT_SECS: u64 = 30;
@@ -60,36 +59,13 @@ struct ChatMessageResponse {
 pub struct LlmService;
 
 impl LlmService {
-    fn key_entry() -> Result<Entry> {
-        Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT).map_err(|_| anyhow!("无法访问系统凭据库"))
-    }
-
-    fn api_key_configured() -> bool {
-        match Self::key_entry() {
-            Ok(entry) => match entry.get_password() {
-                Ok(key) => !key.trim().is_empty(),
-                // 读取失败（而非单纯未配置）时记录真实原因，便于定位
-                Err(keyring::Error::NoEntry) => false,
-                Err(err) => {
-                    log::warn!("读取 LLM API Key 失败: {err}");
-                    false
-                }
-            },
-            Err(err) => {
-                log::warn!("访问系统凭据库失败: {err}");
-                false
-            }
+    /// 校验调用方传入的 API Key（非空即通过；不做持久化）
+    fn require_api_key(api_key: &str) -> Result<String> {
+        let key = api_key.trim();
+        if key.is_empty() {
+            return Err(anyhow!("请先填写 API Key"));
         }
-    }
-
-    fn read_api_key() -> Result<String> {
-        let key = Self::key_entry()?
-            .get_password()
-            .map_err(|_| anyhow!("未配置 API Key，请先在设置中保存密钥"))?;
-        if key.trim().is_empty() {
-            return Err(anyhow!("未配置 API Key，请先在设置中保存密钥"));
-        }
-        Ok(key)
+        Ok(key.to_string())
     }
 
     fn normalize_base_url(raw: &str) -> Result<String> {
@@ -120,14 +96,6 @@ impl LlmService {
         if model.is_empty() || model.chars().count() > 256 {
             return Err(anyhow!("模型名称不能为空且不得超过 256 个字符"));
         }
-        if input.clear_api_key
-            && input
-                .api_key
-                .as_deref()
-                .is_some_and(|key| !key.trim().is_empty())
-        {
-            return Err(anyhow!("不能同时保存和清除 API Key"));
-        }
         Ok((
             provider_name.to_string(),
             Self::normalize_base_url(&input.base_url)?,
@@ -143,26 +111,18 @@ impl LlmService {
     }
 
     pub fn get_config(db: &Database) -> Result<LlmConfig> {
+        // API Key 不持久化：是否已填写由前端输入框状态判断
         Ok(LlmConfig {
             provider_name: db.get_setting("llm_provider_name")?.unwrap_or_default(),
             base_url: db.get_setting("llm_base_url")?.unwrap_or_default(),
             model: db.get_setting("llm_model")?.unwrap_or_default(),
-            api_key_configured: Self::api_key_configured(),
         })
     }
 
     pub fn save_config(db: &Database, input: LlmConfigInput) -> Result<LlmConfig> {
         let (provider_name, base_url, model) = Self::validate_input(&input)?;
-        if input.clear_api_key {
-            match Self::key_entry()?.delete_credential() {
-                Ok(()) | Err(keyring::Error::NoEntry) => {}
-                Err(_) => return Err(anyhow!("无法从系统凭据库清除 API Key")),
-            }
-        } else if let Some(key) = input.api_key.filter(|key| !key.trim().is_empty()) {
-            Self::key_entry()?
-                .set_password(&key)
-                .map_err(|_| anyhow!("无法将 API Key 保存到系统凭据库"))?;
-        }
+        // API Key 不做任何持久化：由前端在会话内持有并按调用传入。
+        // input.api_key 在此故意忽略（个人本地工具，不落数据库/凭据库）。
         db.set_setting("llm_provider_name", &provider_name)?;
         db.set_setting("llm_base_url", &base_url)?;
         db.set_setting("llm_model", &model)?;
@@ -292,11 +252,7 @@ impl LlmService {
         input: LlmConfigInput,
     ) -> Result<LlmConnectionTest> {
         let (_, base_url, model) = Self::validate_input(&input)?;
-        let api_key = input
-            .api_key
-            .filter(|key| !key.trim().is_empty())
-            .map(Ok)
-            .unwrap_or_else(Self::read_api_key)?;
+        let api_key = Self::require_api_key(input.api_key.as_deref().unwrap_or(""))?;
         let content = Self::chat_completion(
             &base_url,
             &model,
@@ -312,7 +268,6 @@ impl LlmService {
         if content.trim().is_empty() {
             return Err(anyhow!("LLM 连接测试未返回内容"));
         }
-        // 保持 db 参数在签名中，便于未来测试已保存配置；避免 API Key 出现在持久层。
         let _ = db;
         Ok(LlmConnectionTest {
             model,
@@ -396,20 +351,36 @@ impl LlmService {
         }
     }
 
-    pub async fn process_all(db: &Database) -> Result<DescriptionProcessingResult> {
+    /// 批量生成中文简介。ids 为空表示全部技能；api_key 由调用方（前端）传入，
+    /// 不经过任何持久层。单个技能失败不中断整批，汇总到 failures。
+    pub async fn process_skills(
+        db: &Database,
+        ids: &[String],
+        api_key: &str,
+    ) -> Result<DescriptionProcessingResult> {
         let config = Self::get_config(db)?;
         if config.base_url.is_empty() || config.model.is_empty() {
-            return Err(anyhow!("请先保存完整的 LLM 配置"));
+            return Err(anyhow!("请先保存完整的模型配置（Base URL 与模型名称）"));
         }
+        let api_key = Self::require_api_key(api_key)?;
         let base_url = Self::normalize_base_url(&config.base_url)?;
-        let api_key = Self::read_api_key()?;
-        let skills = db.get_all_skills()?;
+        let records: Vec<SkillRecord> = if ids.is_empty() {
+            db.get_all_skills()?.into_values().collect()
+        } else {
+            let mut records = Vec::with_capacity(ids.len());
+            for id in ids {
+                if let Some(record) = db.get_skill(id)? {
+                    records.push(record);
+                }
+            }
+            records
+        };
         let mut result = DescriptionProcessingResult {
-            processed: skills.len(),
+            processed: records.len(),
             succeeded: 0,
             failures: Vec::new(),
         };
-        for record in skills.values() {
+        for record in &records {
             match Self::process_record(db, record, &base_url, &config.model, &api_key).await {
                 Ok(()) => result.succeeded += 1,
                 Err(error) => result.failures.push(DescriptionProcessingFailure {
@@ -419,30 +390,6 @@ impl LlmService {
             }
         }
         Ok(result)
-    }
-
-    /// 新安装或更新后的最佳努力处理；未配置模型时维持 pending，其他失败不阻断主流程。
-    pub async fn process_skill_if_configured(db: &Database, skill_id: &str) {
-        let Ok(config) = Self::get_config(db) else {
-            return;
-        };
-        if config.base_url.is_empty() || config.model.is_empty() || !config.api_key_configured {
-            return;
-        }
-        let Ok(base_url) = Self::normalize_base_url(&config.base_url) else {
-            return;
-        };
-        let Ok(api_key) = Self::read_api_key() else {
-            return;
-        };
-        let Ok(Some(record)) = db.get_skill(skill_id) else {
-            return;
-        };
-        if let Err(error) =
-            Self::process_record(db, &record, &base_url, &config.model, &api_key).await
-        {
-            log::warn!("技能 {} 的中文简介生成失败: {error}", record.id);
-        }
     }
 }
 

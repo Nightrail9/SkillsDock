@@ -423,14 +423,13 @@ pub struct AppStateSnapshot {
     pub home_dir: String,
 }
 
-/// 面向前端的 LLM 连接配置（密钥仅保存在系统凭据库）。
+/// 面向前端的 LLM 连接配置。API Key 不持久化，由前端在会话内持有并按调用传入。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LlmConfig {
     pub provider_name: String,
     pub base_url: String,
     pub model: String,
-    pub api_key_configured: bool,
 }
 
 impl Default for LlmConfig {
@@ -439,12 +438,12 @@ impl Default for LlmConfig {
             provider_name: String::new(),
             base_url: String::new(),
             model: String::new(),
-            api_key_configured: false,
         }
     }
 }
 
-/// 写入 LLM 连接配置。api_key 不会序列化回前端或写入 SQLite。
+/// 写入 LLM 连接配置。api_key 仅用于当次调用（连接测试/生成简介），
+/// 不写入 SQLite、不存入系统凭据库——个人本地工具，Key 只在客户端输入框中流转。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LlmConfigInput {
@@ -453,8 +452,6 @@ pub struct LlmConfigInput {
     pub model: String,
     #[serde(default)]
     pub api_key: Option<String>,
-    #[serde(default)]
-    pub clear_api_key: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

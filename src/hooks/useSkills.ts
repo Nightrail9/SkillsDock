@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { onboardingApi, skillsApi } from '../lib/api';
+import { onboardingApi, skillsApi, settingsApi } from '../lib/api';
+import { readLlmApiKey } from '../lib/llmKey';
 import { runSequentialBulkAction } from '../lib/utils/sequentialBulkAction';
 import { APP_STATE_KEY } from './useAppState';
 import { mergeImportedSkills } from './useSkills.helpers';
@@ -10,6 +11,18 @@ import type {
   InstallRequest,
   ToolId,
 } from '../types';
+
+/** 安装/更新/导入后最佳努力生成中文简介。
+ *  Key 只存在于客户端（localStorage）：未填写则跳过；失败仅告警不阻断主流程。
+ *  处理后刷新首屏状态，让卡片上的新简介可见。 */
+function autoProcessDescriptions(ids: string[], queryClient: ReturnType<typeof useQueryClient>) {
+  const apiKey = readLlmApiKey();
+  if (!apiKey.trim() || ids.length === 0) return;
+  void settingsApi
+    .processSkillDescriptions(ids, apiKey)
+    .then(() => queryClient.invalidateQueries({ queryKey: APP_STATE_KEY }))
+    .catch((err) => console.warn('中文简介自动生成失败:', err));
+}
 
 /** 技能详情（含真实 documentation 与 files 文件树） */
 export function useSkillDetail(id: string | undefined) {
@@ -91,6 +104,7 @@ export function useUpdateSkill() {
           : old,
       );
       queryClient.invalidateQueries({ queryKey: ['skills', 'detail', updated.id] });
+      autoProcessDescriptions([updated.id], queryClient);
     },
     onSettled: () => queryClient.invalidateQueries({ queryKey: APP_STATE_KEY }),
   });
@@ -112,6 +126,7 @@ export function useInstallSkillUnified() {
   return useMutation({
     mutationFn: ({ skill, req }: { skill: DiscoverySkillItem; req: InstallRequest }) =>
       skillsApi.installUnified(skill, req),
+    onSuccess: (installed) => autoProcessDescriptions([installed.id], queryClient),
     onSettled: () => queryClient.invalidateQueries({ queryKey: APP_STATE_KEY }),
   });
 }
@@ -149,6 +164,10 @@ export function useImportSkillsFromApps() {
     onSuccess: (imported) => {
       queryClient.setQueryData<AppState>(APP_STATE_KEY, (old) =>
         old ? { ...old, skills: mergeImportedSkills(old.skills, imported) } : old,
+      );
+      autoProcessDescriptions(
+        imported.map((skill) => skill.id),
+        queryClient,
       );
     },
     onSettled: () =>

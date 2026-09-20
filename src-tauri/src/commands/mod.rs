@@ -122,12 +122,11 @@ pub async fn install_skill_unified(
     )
     .await
     .map_err(|e| e.to_string())?;
-    LlmService::process_skill_if_configured(&state.db, &record.id).await;
     let record = state
         .db
         .get_skill(&record.id)
         .map_err(|e| e.to_string())?
-        .ok_or_else(|| "技能在简介处理期间被移除".to_string())?;
+        .ok_or_else(|| "技能在安装后被移除".to_string())?;
     let tools = state.db.list_tool_adapters().map_err(|e| e.to_string())?;
     let projects = state.db.list_skill_projects().map_err(|e| e.to_string())?;
     Ok(SkillService::record_to_skill(
@@ -201,12 +200,11 @@ pub async fn update_skill(state: State<'_, AppState>, id: String) -> CmdResult<S
     let record = SkillService::update_skill(&state.db, &id)
         .await
         .map_err(|e| e.to_string())?;
-    LlmService::process_skill_if_configured(&state.db, &record.id).await;
     let record = state
         .db
         .get_skill(&record.id)
         .map_err(|e| e.to_string())?
-        .ok_or_else(|| "技能在简介处理期间被移除".to_string())?;
+        .ok_or_else(|| "技能在安装后被移除".to_string())?;
     let tools = state.db.list_tool_adapters().map_err(|e| e.to_string())?;
     let projects = state.db.list_skill_projects().map_err(|e| e.to_string())?;
     Ok(SkillService::record_to_skill(
@@ -590,8 +588,22 @@ pub async fn test_llm_connection(
 #[tauri::command]
 pub async fn process_all_skill_descriptions(
     state: State<'_, AppState>,
+    api_key: String,
 ) -> CmdResult<DescriptionProcessingResult> {
-    LlmService::process_all(&state.db)
+    LlmService::process_skills(&state.db, &[], &api_key)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// 为指定技能生成中文简介（安装/更新/导入后由前端触发；
+/// API Key 由前端按调用传入，不落任何持久层）
+#[tauri::command]
+pub async fn process_skill_descriptions(
+    state: State<'_, AppState>,
+    ids: Vec<String>,
+    api_key: String,
+) -> CmdResult<DescriptionProcessingResult> {
+    LlmService::process_skills(&state.db, &ids, &api_key)
         .await
         .map_err(|e| e.to_string())
 }
@@ -619,9 +631,6 @@ pub async fn import_skills_from_apps(
     let records = SkillService::import_from_apps(&state.db, selections)
         .await
         .map_err(|e| e.to_string())?;
-    for record in &records {
-        LlmService::process_skill_if_configured(&state.db, &record.id).await;
-    }
     let records: Vec<_> = records
         .iter()
         .filter_map(|record| state.db.get_skill(&record.id).ok().flatten())
