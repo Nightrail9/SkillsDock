@@ -434,8 +434,23 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             <button type="button" onClick={saveLlm} disabled={llmBusy !== null} className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white text-xs font-bold">{llmBusy === 'save' ? '保存中...' : '保存模型配置'}</button>
             <button type="button" onClick={testLlm} disabled={llmBusy !== null} className="px-3.5 py-2 rounded-xl border border-slate-300 hover:bg-slate-50 disabled:opacity-60 text-slate-700 text-xs font-bold inline-flex items-center gap-1.5"><PlugZap className="w-3.5 h-3.5" />{llmBusy === 'test' ? '测试中...' : '测试连接'}</button>
             {llmConfig?.apiKeyConfigured && <button type="button" onClick={clearLlmKey} disabled={llmBusy !== null} className="px-3.5 py-2 rounded-xl border border-rose-200 hover:bg-rose-50 disabled:opacity-60 text-rose-700 text-xs font-bold">清除 API Key</button>}
-            <button type="button" onClick={processDescriptions} disabled={llmBusy !== null || !llmConfig?.apiKeyConfigured} className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 disabled:opacity-60 text-white text-xs font-bold inline-flex items-center gap-1.5"><WandSparkles className="w-3.5 h-3.5" />{llmBusy === 'process' ? '正在处理全部技能...' : '处理全部已安装技能'}</button>
+            <button
+              type="button"
+              onClick={processDescriptions}
+              disabled={llmBusy !== null || !llmConfig?.apiKeyConfigured}
+              title={
+                llmConfig?.apiKeyConfigured
+                  ? '用当前模型把全部已安装技能的描述批量转换为 25–40 个汉字的中文简介'
+                  : '请先点击「保存模型配置」：API Key 存入系统凭据库后才能使用（仅「测试连接」接受未保存的 Key）'
+              }
+              className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 disabled:opacity-60 text-white text-xs font-bold inline-flex items-center gap-1.5"
+            >
+              <WandSparkles className="w-3.5 h-3.5" />{llmBusy === 'process' ? '正在生成...' : '生成中文简介'}
+            </button>
           </div>
+          <p className="text-[11px] text-slate-400 leading-relaxed">
+            「生成中文简介」：用上方配置的模型，将全部已安装技能的英文描述翻译、中文描述压缩为 25–40 个汉字的中文简介，展示在技能卡片与详情页。需先「保存模型配置」；处理中请保持页面打开。
+          </p>
           {llmMessage && <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 whitespace-pre-wrap">{llmMessage}</div>}
         </div>
 
