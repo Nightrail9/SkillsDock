@@ -65,10 +65,21 @@ impl LlmService {
     }
 
     fn api_key_configured() -> bool {
-        Self::key_entry()
-            .and_then(|entry| entry.get_password().map_err(|_| anyhow!("未配置 API Key")))
-            .map(|key| !key.trim().is_empty())
-            .unwrap_or(false)
+        match Self::key_entry() {
+            Ok(entry) => match entry.get_password() {
+                Ok(key) => !key.trim().is_empty(),
+                // 读取失败（而非单纯未配置）时记录真实原因，便于定位
+                Err(keyring::Error::NoEntry) => false,
+                Err(err) => {
+                    log::warn!("读取 LLM API Key 失败: {err}");
+                    false
+                }
+            },
+            Err(err) => {
+                log::warn!("访问系统凭据库失败: {err}");
+                false
+            }
+        }
     }
 
     fn read_api_key() -> Result<String> {

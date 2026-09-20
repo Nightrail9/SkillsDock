@@ -47,6 +47,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [apiKey, setApiKey] = useState('');
   const [llmBusy, setLlmBusy] = useState<'save' | 'test' | 'process' | 'clear' | null>(null);
   const [llmMessage, setLlmMessage] = useState<string | null>(null);
+  // 本次会话内是否成功保存过 Key（保存成功后立即解锁批量生成，
+  // 不依赖首屏快照的 apiKeyConfigured——快照刷新有任何延迟都不影响使用）
+  const [keySaved, setKeySaved] = useState(false);
   const migrateMutation = useMigrateLibrary();
   const appState = useAppState().data;
   const invalidateAppState = useInvalidateAppState();
@@ -79,6 +82,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     try {
       await settingsApi.saveLlmConfig(llmInput());
       setApiKey('');
+      setKeySaved(true);
       setLlmMessage('模型配置已保存；API Key 仅保存于系统凭据库。');
       await invalidateAppState();
     } catch (err) {
@@ -93,7 +97,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setLlmMessage(null);
     try {
       const result = await settingsApi.testLlmConnection(llmInput());
-      setLlmMessage(`${result.message}：${result.model}`);
+      const keyPending = !(llmConfig?.apiKeyConfigured || keySaved);
+      setLlmMessage(
+        keyPending
+          ? `${result.message}：${result.model}（注意：Key 尚未保存，仅对本次测试有效；使用「生成中文简介」前请先点「保存模型配置」）`
+          : `${result.message}：${result.model}`,
+      );
     } catch (err) {
       setLlmMessage(`连接失败：${errorToString(err)}`);
     } finally {
@@ -107,6 +116,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     try {
       await settingsApi.saveLlmConfig(llmInput(true));
       setApiKey('');
+      setKeySaved(false);
       setLlmMessage('API Key 已从系统凭据库清除。');
       await invalidateAppState();
     } catch (err) {
@@ -427,8 +437,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             <input value={llmForm.baseUrl} onChange={(e) => setLlmForm({ ...llmForm, baseUrl: e.target.value })} placeholder="https://api.example.com/v1" className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-mono focus:bg-white focus:ring-2 focus:ring-indigo-500/20" />
           </label>
           <label className="block space-y-1.5">
-            <span className="text-xs font-semibold text-slate-700 flex items-center gap-1.5"><KeyRound className="w-3.5 h-3.5" />API Key {llmConfig?.apiKeyConfigured ? '（已保存；留空则不变）' : '（未保存）'}</span>
-            <input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="仅写入系统凭据库，不会再次显示" autoComplete="new-password" className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-mono focus:bg-white focus:ring-2 focus:ring-indigo-500/20" />
+            <span className="text-xs font-semibold text-slate-700 flex items-center gap-1.5"><KeyRound className="w-3.5 h-3.5" />API Key {llmConfig?.apiKeyConfigured || keySaved ? '（已保存；留空则不变）' : '（未保存）'}</span>
+            <input type="password" value={apiKey} onChange={(e) => { setApiKey(e.target.value); setKeySaved(false); }} placeholder="仅写入系统凭据库，不会再次显示" autoComplete="new-password" className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-mono focus:bg-white focus:ring-2 focus:ring-indigo-500/20" />
           </label>
           <div className="flex flex-wrap gap-2">
             <button type="button" onClick={saveLlm} disabled={llmBusy !== null} className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white text-xs font-bold">{llmBusy === 'save' ? '保存中...' : '保存模型配置'}</button>
@@ -437,9 +447,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             <button
               type="button"
               onClick={processDescriptions}
-              disabled={llmBusy !== null || !llmConfig?.apiKeyConfigured}
+              disabled={llmBusy !== null || !(llmConfig?.apiKeyConfigured || keySaved)}
               title={
-                llmConfig?.apiKeyConfigured
+                llmConfig?.apiKeyConfigured || keySaved
                   ? '用当前模型把全部已安装技能的描述批量转换为 25–40 个汉字的中文简介'
                   : '请先点击「保存模型配置」：API Key 存入系统凭据库后才能使用（仅「测试连接」接受未保存的 Key）'
               }
