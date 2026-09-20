@@ -15,13 +15,15 @@ const TOAST_ICON: Record<ToastType, React.ReactNode> = {
   error: <XCircle className="w-4 h-4 text-rose-500" />,
 };
 
-/** 右上角浮动通知（操作结果 / 失败反馈的唯一用户可见出口） */
+/** 页面顶部中间的浮动通知。按产品要求只展示错误类信息
+ * （成功/提示类不弹窗，避免干扰；AI 工具启停等状态变更不再弹提示）。 */
 export const ToastContainer: React.FC<ToastContainerProps> = ({ toasts, onDismiss }) => {
-  if (toasts.length === 0) return null;
+  const errorToasts = toasts.filter((toast) => toast.type === 'error');
+  if (errorToasts.length === 0) return null;
 
   return (
-    <div className="fixed top-4 right-4 z-[100] flex flex-col gap-2 w-84 max-w-[calc(100vw-2rem)] pointer-events-none select-none">
-      {toasts.map((toast) => (
+    <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[100] flex flex-col gap-2 w-84 max-w-[calc(100vw-2rem)] pointer-events-none select-none">
+      {errorToasts.map((toast) => (
         <div
           key={toast.id}
           role="alert"

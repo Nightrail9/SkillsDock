@@ -10,6 +10,7 @@ import {
   RotateCw,
   AlertCircle,
   RefreshCw,
+  WandSparkles,
 } from 'lucide-react';
 import {
   Skill,
@@ -53,6 +54,8 @@ import { useUpdateSettings, useRedeployProjectLinks } from './hooks/useSettings'
 import { skillsApi } from './lib/api';
 import { useQueryClient } from '@tanstack/react-query';
 import { errorToString } from './lib/errors/skillErrorParser';
+import { settingsApi } from './lib/api';
+import { readLlmApiKey } from './lib/llmKey';
 
 export default function App() {
   // ===== 后端应用状态（首屏一次取全） =====
@@ -80,6 +83,34 @@ export default function App() {
 
   // ===== 启动时回填存量"本地技能"的 skills.sh 社区来源（联网精确匹配；有回填则刷新列表） =====
   const queryClient = useQueryClient();
+
+  // 生成中文简介：只为尚未生成（pending）或生成失败（failed）的技能补生成；
+  // 新安装/更新/导入的技能由各自 mutation 自动触发
+  const [descBusy, setDescBusy] = useState(false);
+  const pendingDescSkills = useMemo(
+    () => skills.filter((skill) => skill.descriptionStatus !== 'ready'),
+    [skills],
+  );
+  const handleGenerateDescriptions = async () => {
+    const apiKey = readLlmApiKey().trim();
+    if (!apiKey) {
+      addToast('error', '请先在设置页填写 API Key');
+      return;
+    }
+    if (pendingDescSkills.length === 0) return;
+    setDescBusy(true);
+    try {
+      await settingsApi.processSkillDescriptions(
+        pendingDescSkills.map((skill) => skill.id),
+        apiKey,
+      );
+      queryClient.invalidateQueries({ queryKey: APP_STATE_KEY });
+    } catch (err) {
+      addToast('error', '简介生成失败', errorToString(err));
+    } finally {
+      setDescBusy(false);
+    }
+  };
   useEffect(() => {
     let cancelled = false;
     skillsApi
@@ -677,6 +708,22 @@ export default function App() {
                     >
                       <RotateCw className={`w-4 h-4 ${bulkUpdateMutation.isPending ? 'animate-spin' : ''}`} />
                       <span>全部更新 ({updateAvailableCount})</span>
+                    </button>
+                  )}
+
+                  {pendingDescSkills.length > 0 && (
+                    <button
+                      onClick={handleGenerateDescriptions}
+                      disabled={descBusy}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 disabled:opacity-60 text-sm font-semibold transition-colors"
+                      title="为尚未生成或生成失败的技能补生成中文简介（新安装/更新的技能会自动生成）"
+                    >
+                      <WandSparkles className={`w-4 h-4 ${descBusy ? 'animate-pulse' : ''}`} />
+                      <span>
+                        {descBusy
+                          ? '生成中...'
+                          : `生成中文简介 (${pendingDescSkills.length})`}
+                      </span>
                     </button>
                   )}
 

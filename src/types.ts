@@ -17,8 +17,6 @@ export interface ToolAdapter {
   description: string;
   defaultPath: string;
   currentPath: string;
-  /** 项目内技能目录（相对项目根，如 '.claude/skills'）；空字符串 = 不参与项目级分发 */
-  projectSubdir: string;
   isBuiltin: boolean;
   isEnabled: boolean; // whether this tool adapter is active in the app
   installedSkillsCount: number;

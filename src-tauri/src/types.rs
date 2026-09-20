@@ -111,8 +111,6 @@ pub struct ToolAdapter {
     pub description: String,
     pub default_path: String,
     pub current_path: String,
-    /// 项目内技能目录（相对项目根，如 `.claude/skills`）；空 = 不参与项目级分发
-    pub project_subdir: String,
     pub is_builtin: bool,
     /// 该适配器是否在应用内启用
     pub is_enabled: bool,
@@ -489,9 +487,6 @@ pub struct ToolAdapterInput {
     pub description: Option<String>,
     /// 技能目录路径（支持 ~ 开头）
     pub path: String,
-    /// 项目内技能目录（相对项目根，如 `.claude/skills`）；空 = 不参与项目级分发
-    #[serde(default)]
-    pub project_subdir: Option<String>,
     #[serde(default)]
     pub color: Option<String>,
     #[serde(default)]

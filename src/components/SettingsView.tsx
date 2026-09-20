@@ -13,7 +13,6 @@ import {
   Bot,
   KeyRound,
   PlugZap,
-  WandSparkles,
   Eye,
   EyeOff
 } from 'lucide-react';
@@ -51,7 +50,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   // 个人本地工具，Key 随手填写、眼睛切换可见性，按调用传给后端
   const [apiKey, setApiKey] = useState(() => readLlmApiKey());
   const [showKey, setShowKey] = useState(false);
-  const [llmBusy, setLlmBusy] = useState<'save' | 'test' | 'process' | 'clear' | null>(null);
+  const [llmBusy, setLlmBusy] = useState<'save' | 'test' | 'clear' | null>(null);
   const [llmMessage, setLlmMessage] = useState<string | null>(null);
   const migrateMutation = useMigrateLibrary();
   const appState = useAppState().data;
@@ -115,29 +114,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     }
   };
 
-  const processDescriptions = async () => {
-    setLlmBusy('process');
-    setLlmMessage(null);
-    try {
-      const result = await settingsApi.processAllSkillDescriptions(apiKey.trim());
-      const failed = result.failures.length;
-      if (failed === 0) {
-        setLlmMessage(`已生成 ${result.succeeded}/${result.processed} 个中文简介。`);
-      } else {
-        // 展示去重后的失败原因，便于定位（模型不支持/超长/无原始描述等）
-        const reasons = [...new Set(result.failures.map((f) => f.reason))].slice(0, 3);
-        const reasonLines = reasons.map((r) => `· ${r}`).join('\n');
-        setLlmMessage(
-          `已生成 ${result.succeeded}/${result.processed} 个中文简介；${failed} 个失败：\n${reasonLines}`,
-        );
-      }
-      await invalidateAppState();
-    } catch (err) {
-      setLlmMessage(`处理失败：${errorToString(err)}`);
-    } finally {
-      setLlmBusy(null);
-    }
-  };
+
 
   /** 保存并即时生效 */
   const save = (next: AppSettings) => {
@@ -455,15 +432,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           <div className="flex flex-wrap gap-2">
             <button type="button" onClick={saveLlm} disabled={llmBusy !== null} className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white text-xs font-bold">{llmBusy === 'save' ? '保存中...' : '保存模型配置'}</button>
             <button type="button" onClick={testLlm} disabled={llmBusy !== null} className="px-3.5 py-2 rounded-xl border border-slate-300 hover:bg-slate-50 disabled:opacity-60 text-slate-700 text-xs font-bold inline-flex items-center gap-1.5"><PlugZap className="w-3.5 h-3.5" />{llmBusy === 'test' ? '测试中...' : '测试连接'}</button>
-            <button
-              type="button"
-              onClick={processDescriptions}
-              disabled={llmBusy !== null || !keyReady}
-              title={keyReady ? undefined : '请先填写 API Key'}
-              className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 disabled:opacity-60 text-white text-xs font-bold inline-flex items-center gap-1.5"
-            >
-              <WandSparkles className="w-3.5 h-3.5" />{llmBusy === 'process' ? '正在生成...' : '生成中文简介'}
-            </button>
           </div>
           {llmMessage && <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 whitespace-pre-wrap">{llmMessage}</div>}
         </div>

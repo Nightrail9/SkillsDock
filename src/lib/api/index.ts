@@ -108,8 +108,6 @@ export interface AddToolAdapterRequest {
   vendor: string;
   description: string;
   skillsDir: string;
-  /** 项目内技能目录（相对项目根，如 '.claude/skills'）；空 = 不参与项目级分发 */
-  projectSubdir?: string;
   color?: string;
 }
 
@@ -118,8 +116,6 @@ export interface UpdateToolAdapterRequest {
   name?: string;
   description?: string;
   skillsDir?: string;
-  /** 项目内技能目录（相对项目根）；传空字符串表示不参与项目级分发 */
-  projectSubdir?: string;
   color?: string;
 }
 
@@ -132,7 +128,6 @@ export const toolsApi = {
         vendor: req.vendor,
         description: req.description,
         path: req.skillsDir,
-        projectSubdir: req.projectSubdir ?? '',
         color: req.color,
       },
     });
@@ -146,7 +141,6 @@ export const toolsApi = {
         name: req.name,
         description: req.description,
         path: req.skillsDir,
-        projectSubdir: req.projectSubdir,
         color: req.color,
       },
     });

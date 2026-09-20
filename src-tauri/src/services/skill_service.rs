@@ -1253,14 +1253,35 @@ impl SkillService {
         }
     }
 
-    /// 项目内某工具的技能目录根：`<project>/<tool.project_subdir>`；
-    /// 工具未配置项目内目录时返回 None（不参与项目级分发）
+    /// 项目内某工具的技能目录根：`<project>/<本地技能目录去掉 home 根的相对路径>`。
+    /// 约定即用户规则：项目内目录 = 本地目录去掉根目录（如 `~/.claude/skills`
+    /// → `.claude/skills`）；本地目录不在 home 下时该工具不参与项目级分发
     fn project_tool_root(tool: &ToolAdapter, project_path: &str) -> Option<PathBuf> {
-        let subdir = tool.project_subdir.trim();
-        if subdir.is_empty() {
-            return None;
+        let home = config::get_home_dir().ok()?;
+        let rel = Self::tool_project_subdir(tool, &home)?;
+        Some(Path::new(project_path).join(rel))
+    }
+
+    /// 工具本地技能目录相对 home 的路径（分隔符统一为 `/`）；
+    /// 不在 home 下或等于 home 本身时返回 None。home 由参数传入便于测试
+    fn tool_project_subdir(tool: &ToolAdapter, home: &Path) -> Option<String> {
+        let expanded = config::expand_tilde(&tool.current_path).ok()?;
+        // Windows 上大小写/`\\?\` 前缀可能不一致：先直接裁，失败则 canonicalize 双方再裁
+        let rel: PathBuf = match expanded.strip_prefix(home) {
+            Ok(rel) => rel.to_path_buf(),
+            Err(_) => {
+                let expanded = expanded.canonicalize().ok()?;
+                let home = home.canonicalize().ok()?;
+                expanded.strip_prefix(&home).ok()?.to_path_buf()
+            }
+        };
+        let rel = rel.to_string_lossy().replace('\\', "/");
+        let rel = rel.trim_start_matches('/').to_string();
+        if rel.is_empty() {
+            None
+        } else {
+            Some(rel)
         }
-        Some(Path::new(project_path).join(subdir))
     }
 
     /// 工具的技能根目录（current_path 展开 ~）
@@ -3528,7 +3549,7 @@ impl SkillService {
             .map(|t| {
                 let flagged = record.enabled_tools.iter().any(|id| id == &t.id);
                 // DB 标记与落盘双重确认：工具目录被外部删除后不再显示"已部署"。
-                // 项目级技能检查项目内目录（project_subdir），全局检查工具全局目录
+                // 项目级技能检查项目内目录（由工具本地目录推导），全局检查工具全局目录
                 let actually_deployed = flagged
                     && Self::require_valid_directory(&record.directory)
                         .map(|directory| {
@@ -4678,7 +4699,6 @@ mod tests {
             description: String::new(),
             default_path: current_path.to_string(),
             current_path: current_path.to_string(),
-            project_subdir: String::new(),
             is_builtin: false,
             is_enabled: true,
             installed_skills_count: 0,
@@ -4688,11 +4708,10 @@ mod tests {
         }
     }
 
-    /// 在 test_tool 基础上配置项目内技能目录
-    fn test_tool_with_subdir(id: &str, current_path: &Path, project_subdir: &str) -> ToolAdapter {
-        let mut tool = test_tool(id, &current_path.display().to_string());
-        tool.project_subdir = project_subdir.to_string();
-        tool
+    /// 本地技能目录位于 home 之下（如 <home>/.claude/skills）的测试工具：
+    /// 项目内目录由本地目录去掉 home 根推导得出（.claude/skills）
+    fn test_tool_under_home(id: &str, home: &Path, subdir: &str) -> ToolAdapter {
+        test_tool(id, &home.join(subdir).display().to_string())
     }
 
     fn test_project_meta(install_name: &str, tool_ids: &[&str]) -> ProjectInstallMeta {
@@ -4977,18 +4996,43 @@ mod tests {
     }
 
     #[test]
+    fn tool_project_subdir_derives_from_local_path_under_home() {
+        let home = config::get_home_dir().expect("home");
+        // ~/.claude/skills → .claude/skills（用户规则：去掉 home 根）
+        let tool = test_tool("claude", &home.join(".claude/skills").display().to_string());
+        assert_eq!(
+            SkillService::tool_project_subdir(&tool, &home).as_deref(),
+            Some(".claude/skills")
+        );
+        // ~/.gemini/config/skills → .gemini/config/skills（多级相对路径）
+        let tool = test_tool("ag", &home.join(".gemini/config/skills").display().to_string());
+        assert_eq!(
+            SkillService::tool_project_subdir(&tool, &home).as_deref(),
+            Some(".gemini/config/skills")
+        );
+        // 本地目录不在 home 下 → 不参与项目级分发
+        let outside = if cfg!(windows) { r"D:\tools\skills" } else { "/opt/tools/skills" };
+        let tool = test_tool("custom", outside);
+        assert!(SkillService::tool_project_subdir(&tool, &home).is_none());
+        // 等于 home 本身 → 无相对路径
+        let tool = test_tool("root", &home.display().to_string());
+        assert!(SkillService::tool_project_subdir(&tool, &home).is_none());
+    }
+
+    #[test]
     fn install_dir_to_project_stores_in_library_and_deploys_to_each_tool() {
         let temp = tempfile::tempdir().unwrap();
         let library = temp.path().join("library");
         fs::create_dir_all(&library).unwrap();
         let db = memory_db_with_library(&library);
+        let home = config::get_home_dir().expect("home");
         let project_root = temp.path().join("proj");
         fs::create_dir_all(&project_root).unwrap();
         let project = (1i64, "proj".to_string(), project_root.display().to_string(), 1);
 
         let tool_a =
-            test_tool_with_subdir("tool-a", &temp.path().join("global-a"), ".claude/skills");
-        let tool_b = test_tool_with_subdir("tool-b", &temp.path().join("global-b"), ".codex/skills");
+            test_tool_under_home("tool-a", &home, ".claude/skills");
+        let tool_b = test_tool_under_home("tool-b", &home, ".codex/skills");
         db.insert_tool_adapter(&tool_a, 0).unwrap();
         db.insert_tool_adapter(&tool_b, 1).unwrap();
 
@@ -5065,22 +5109,18 @@ mod tests {
         let library = temp.path().join("library");
         fs::create_dir_all(&library).unwrap();
         let db = memory_db_with_library(&library);
+        let home = config::get_home_dir().expect("home");
         let project_root = temp.path().join("proj");
         fs::create_dir_all(&project_root).unwrap();
         let project = (1i64, "proj".to_string(), project_root.display().to_string(), 1);
 
-        // tool-a 正常；tool-b 的项目内目录落在一个普通文件之下，create_dir_all 必失败
-        let tool_a =
-            test_tool_with_subdir("tool-a", &temp.path().join("global-a"), ".claude/skills");
-        let blocker = temp.path().join("not-a-dir");
-        fs::write(&blocker, "x").unwrap();
-        let tool_b = test_tool_with_subdir(
-            "tool-b",
-            &temp.path().join("global-b"),
-            &blocker.join("skills").display().to_string(),
-        );
+        // tool-a 正常；tool-b 推导出的项目内目录 <proj>/.codex/skills 被普通文件
+        // <proj>/.codex 挡住，create_dir_all 必失败
+        let tool_a = test_tool_under_home("tool-a", &home, ".claude/skills");
+        let tool_b = test_tool_under_home("tool-b", &home, ".codex/skills");
         db.insert_tool_adapter(&tool_a, 0).unwrap();
         db.insert_tool_adapter(&tool_b, 1).unwrap();
+        fs::write(project_root.join(".codex"), "x").unwrap();
 
         let source = write_source_skill(temp.path(), "my-skill");
         SkillService::install_dir_to_project(
@@ -5110,12 +5150,13 @@ mod tests {
         let library = temp.path().join("library");
         fs::create_dir_all(&library).unwrap();
         let db = memory_db_with_library(&library);
+        let home = config::get_home_dir().expect("home");
         let project_root = temp.path().join("proj");
         fs::create_dir_all(&project_root).unwrap();
         let project = (1i64, "proj".to_string(), project_root.display().to_string(), 1);
 
         let tool_a =
-            test_tool_with_subdir("tool-a", &temp.path().join("global-a"), ".claude/skills");
+            test_tool_under_home("tool-a", &home, ".claude/skills");
         db.insert_tool_adapter(&tool_a, 0).unwrap();
 
         let source = write_source_skill(temp.path(), "my-skill");
@@ -5152,13 +5193,14 @@ mod tests {
         let library = temp.path().join("library");
         fs::create_dir_all(&library).unwrap();
         let db = memory_db_with_library(&library);
+        let home = config::get_home_dir().expect("home");
         let project_root = temp.path().join("proj");
         fs::create_dir_all(&project_root).unwrap();
         let project = (1i64, "proj".to_string(), project_root.display().to_string(), 1);
 
         let tool_a =
-            test_tool_with_subdir("tool-a", &temp.path().join("global-a"), ".claude/skills");
-        let tool_b = test_tool_with_subdir("tool-b", &temp.path().join("global-b"), ".codex/skills");
+            test_tool_under_home("tool-a", &home, ".claude/skills");
+        let tool_b = test_tool_under_home("tool-b", &home, ".codex/skills");
         db.insert_tool_adapter(&tool_a, 0).unwrap();
         db.insert_tool_adapter(&tool_b, 1).unwrap();
 

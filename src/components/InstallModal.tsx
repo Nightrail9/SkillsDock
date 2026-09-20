@@ -88,22 +88,11 @@ export const InstallModal: React.FC<InstallModalProps> = ({
     if (isInstalling) return;
     if (scope === 'project' && !projectId) return;
     setStep('installing');
-    // 只提交当前作用域下实际可用的工具（项目作用域需配了「项目内技能目录」）
-    const availableToolIds = new Set(
-      (scope === 'project'
-        ? tools.filter((t) => t.isEnabled && t.projectSubdir)
-        : tools.filter((t) => t.isEnabled)
-      ).map((t) => t.id),
-    );
     onConfirmInstall({
       item,
       scope,
       projectId: scope === 'project' ? projectId : undefined,
-      selectedTools: Object.fromEntries(
-        Object.entries(selectedTools).filter(
-          ([id, on]) => on && availableToolIds.has(id as ToolId),
-        ),
-      ),
+      selectedTools,
       deployMethod,
     });
   };
@@ -268,17 +257,9 @@ export const InstallModal: React.FC<InstallModalProps> = ({
                   2. 选择启用的 AI 工具
                 </label>
                 {(() => {
-                  // 项目作用域只列出配了「项目内技能目录」的工具（见 AI 工具页）
-                  const availableTools =
-                    scope === 'project'
-                      ? tools.filter((t) => t.isEnabled && t.projectSubdir)
-                      : tools.filter((t) => t.isEnabled);
+                  const availableTools = tools.filter((t) => t.isEnabled);
                   if (availableTools.length === 0) {
-                    return scope === 'project' ? (
-                      <div className="p-3 rounded-2xl border border-dashed border-slate-300 bg-slate-50/70 text-[11px] text-slate-500 leading-relaxed">
-                        暂无可用工具：请先到「AI 工具」页为对应工具填写项目内技能目录。
-                      </div>
-                    ) : (
+                    return (
                       <div className="col-span-full py-3 text-center text-xs text-slate-400 bg-slate-50 rounded-xl border border-dashed border-slate-200">
                         暂无启用的 AI 工具，可安装后在「AI 工具」页启用并分发
                       </div>

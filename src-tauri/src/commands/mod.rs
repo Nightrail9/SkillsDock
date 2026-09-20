@@ -279,23 +279,6 @@ fn probe_writable(dir: &std::path::Path) -> bool {
     }
 }
 
-/// 归一化"项目内技能目录"：trim、去首尾斜杠、反斜杠转正斜杠；
-/// 拒绝绝对路径与 `..` 段（会被拼到项目根下，必须是安全的相对路径）。空值合法（不参与项目分发）。
-fn normalize_project_subdir(raw: &str) -> Result<String, String> {
-    let trimmed = raw.trim().replace('\\', "/");
-    let trimmed = trimmed.trim_matches('/').trim();
-    if trimmed.is_empty() {
-        return Ok(String::new());
-    }
-    if trimmed.starts_with("~") || trimmed.contains(':') {
-        return Err("项目内技能目录必须是相对路径（如 .claude/skills）".to_string());
-    }
-    if trimmed.split('/').any(|seg| seg.is_empty() || seg == "." || seg == "..") {
-        return Err("项目内技能目录包含非法的路径段".to_string());
-    }
-    Ok(trimmed.to_string())
-}
-
 /// 由名称生成工具 id（slugify + custom- 前缀防撞）
 fn slugify_tool_id(name: &str) -> String {
     let slug: String = name
@@ -345,7 +328,6 @@ pub fn add_tool_adapter(
         description: input.description.clone().unwrap_or_default(),
         default_path: input.path.clone(),
         current_path: input.path.clone(),
-        project_subdir: normalize_project_subdir(input.project_subdir.as_deref().unwrap_or(""))?,
         is_builtin: false,
         is_enabled: input.is_enabled.unwrap_or(true),
         installed_skills_count: 0,
@@ -397,10 +379,6 @@ pub fn update_tool_adapter(
             .unwrap_or_else(|| existing.description.clone()),
         default_path: existing.default_path.clone(),
         current_path: input.path.clone(),
-        project_subdir: match input.project_subdir.as_deref() {
-            Some(raw) => normalize_project_subdir(raw)?,
-            None => existing.project_subdir.clone(),
-        },
         is_builtin: existing.is_builtin,
         is_enabled: input.is_enabled.unwrap_or(existing.is_enabled),
         installed_skills_count: 0,

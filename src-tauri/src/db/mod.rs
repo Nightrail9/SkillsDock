@@ -60,9 +60,6 @@ struct BuiltinToolSeed {
     vendor: &'static str,
     description: &'static str,
     default_path: &'static str,
-    /// 项目内技能目录（相对项目根）；仅 claude-code 的 `.claude/skills` 是已证实约定，
-    /// 其余工具的项目内目录未经官方文档证实，留空由用户按实际使用自行配置
-    project_subdir: &'static str,
     color: &'static str,
 }
 
@@ -73,7 +70,6 @@ const BUILTIN_TOOLS: &[BuiltinToolSeed] = &[
         vendor: "Anthropic",
         description: "Anthropic 官方终端智能体，支持读取项目上下文与自动化工作流",
         default_path: "~/.claude/skills",
-        project_subdir: ".claude/skills",
         color: "#D97757",
     },
     BuiltinToolSeed {
@@ -82,7 +78,6 @@ const BUILTIN_TOOLS: &[BuiltinToolSeed] = &[
         vendor: "OpenAI",
         description: "OpenAI 编程辅助 CLI 与开发工作区技能引擎",
         default_path: "~/.codex/skills",
-        project_subdir: "",
         color: "#10A37F",
     },
     BuiltinToolSeed {
@@ -91,7 +86,6 @@ const BUILTIN_TOOLS: &[BuiltinToolSeed] = &[
         vendor: "Google",
         description: "Google 官方新一代 AI 智能体终端开发平台与多智能体工作流引擎",
         default_path: "~/.gemini/config/skills",
-        project_subdir: "",
         color: "#4285F4",
     },
     BuiltinToolSeed {
@@ -100,7 +94,6 @@ const BUILTIN_TOOLS: &[BuiltinToolSeed] = &[
         vendor: "OpenCode",
         description: "开源本地代码智能体套件，与多模型路由无缝对接",
         default_path: "~/.opencode/skills",
-        project_subdir: "",
         color: "#0284C7",
     },
     BuiltinToolSeed {
@@ -109,7 +102,6 @@ const BUILTIN_TOOLS: &[BuiltinToolSeed] = &[
         vendor: "OpenClaw",
         description: "开源自主多平台 AI 智能体，支持 Telegram/Discord 本地自动化与工作流",
         default_path: "~/.openclaw/skills",
-        project_subdir: "",
         color: "#E11D48",
     },
     BuiltinToolSeed {
@@ -118,7 +110,6 @@ const BUILTIN_TOOLS: &[BuiltinToolSeed] = &[
         vendor: "Nous Research",
         description: "Nous Research 自主进化智能体，具备持久记忆与自主技能生成",
         default_path: "~/.hermes/skills",
-        project_subdir: "",
         color: "#7C3AED",
     },
 ];
@@ -226,7 +217,6 @@ impl Database {
                 description TEXT NOT NULL DEFAULT '',
                 default_path TEXT NOT NULL,
                 current_path TEXT NOT NULL,
-                project_subdir TEXT NOT NULL DEFAULT '',
                 is_builtin INTEGER NOT NULL DEFAULT 0,
                 is_enabled INTEGER NOT NULL DEFAULT 1,
                 color TEXT NOT NULL DEFAULT '#4F46E5',
@@ -235,27 +225,6 @@ impl Database {
             [],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
-
-        // 兼容已有数据库：SQLite 的 CREATE TABLE IF NOT EXISTS 不会补充新增列。
-        // 必须在任何查询 tool_adapters 之前完成（seed_builtin_tools 会先查一次）
-        let mut tool_columns = conn
-            .prepare("PRAGMA table_info(tool_adapters)")
-            .map_err(|e| AppError::Database(e.to_string()))?
-            .query_map([], |row| row.get::<_, String>(1))
-            .map_err(|e| AppError::Database(e.to_string()))?
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|e| AppError::Database(e.to_string()))?;
-        tool_columns.sort();
-        if tool_columns
-            .binary_search(&"project_subdir".to_string())
-            .is_err()
-        {
-            conn.execute(
-                "ALTER TABLE tool_adapters ADD COLUMN project_subdir TEXT NOT NULL DEFAULT ''",
-                [],
-            )
-            .map_err(|e| AppError::Database(e.to_string()))?;
-        }
 
         conn.execute(
             "CREATE TABLE IF NOT EXISTS skill_projects (
@@ -306,15 +275,14 @@ impl Database {
             let enabled = Self::tool_path_detected(tool.default_path);
             conn.execute(
                 "INSERT OR IGNORE INTO tool_adapters
-                 (id, name, vendor, description, default_path, current_path, project_subdir, is_builtin, is_enabled, color, sort_order)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6, 1, ?7, ?8, ?9)",
+                 (id, name, vendor, description, default_path, current_path, is_builtin, is_enabled, color, sort_order)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?5, 1, ?6, ?7, ?8)",
                 params![
                     tool.id,
                     tool.name,
                     tool.vendor,
                     tool.description,
                     tool.default_path,
-                    tool.project_subdir,
                     enabled as i64,
                     tool.color,
                     index as i64
@@ -326,14 +294,12 @@ impl Database {
         Ok(count)
     }
 
-    /// 一次性校正存量库（PRAGMA user_version 迁移标记）：
-    /// v1：移除已下线的内置工具（gemini-cli）；未检测到技能目录的内置工具置为停用
-    /// （用户手动启用过的检测到工具不受影响）；历史 tools_reconcile_v2 标记视为已迁移。
-    /// v2：tool_adapters 增加 project_subdir 列（项目内技能目录），
-    /// claude-code 回填已证实的 `.claude/skills` 约定。
-    /// 整个校正在一个事务内完成。
+    /// 一次性校正存量库（PRAGMA user_version 迁移标记，v1）：
+    /// 移除已下线的内置工具（gemini-cli）；
+    /// 未检测到技能目录的内置工具置为停用（用户手动启用过的检测到工具不受影响）。
+    /// 整个校正在一个事务内完成；历史 tools_reconcile_v2 标记视为已迁移。
     fn reconcile_builtin_tools(&self) -> Result<(), AppError> {
-        const SCHEMA_VERSION: i64 = 2;
+        const SCHEMA_VERSION: i64 = 1;
         {
             let conn = lock_conn!(self.conn);
             let user_version: i64 = conn
@@ -355,14 +321,6 @@ impl Database {
             let tx = conn
                 .unchecked_transaction()
                 .map_err(|e| AppError::Database(e.to_string()))?;
-            // v2：claude-code 回填已证实的 `.claude/skills` 项目内目录约定。
-            // 列本身由 create_tables 的兼容逻辑补齐（必须先于任何查询完成）
-            tx.execute(
-                "UPDATE tool_adapters SET project_subdir = '.claude/skills'
-                 WHERE id = 'claude-code' AND is_builtin = 1 AND project_subdir = ''",
-                [],
-            )
-            .map_err(|e| AppError::Database(e.to_string()))?;
             tx.execute(
                 "DELETE FROM tool_adapters WHERE id = 'gemini-cli' AND is_builtin = 1",
                 [],
@@ -449,7 +407,7 @@ impl Database {
         let mut stmt = conn
             .prepare(
                 "SELECT id, name, vendor, description, default_path, current_path,
-                        project_subdir, is_builtin, is_enabled, color
+                        is_builtin, is_enabled, color
                  FROM tool_adapters ORDER BY sort_order ASC, rowid ASC",
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
@@ -463,13 +421,12 @@ impl Database {
                     description: row.get(3)?,
                     default_path: row.get(4)?,
                     current_path: row.get(5)?,
-                    project_subdir: row.get(6)?,
-                    is_builtin: row.get::<_, i64>(7)? != 0,
-                    is_enabled: row.get::<_, i64>(8)? != 0,
+                    is_builtin: row.get::<_, i64>(6)? != 0,
+                    is_enabled: row.get::<_, i64>(7)? != 0,
                     installed_skills_count: 0,
                     detected: false,
                     version: None,
-                    color: row.get(9)?,
+                    color: row.get(8)?,
                 })
             })
             .map_err(|e| AppError::Database(e.to_string()))?;
@@ -492,8 +449,8 @@ impl Database {
         let conn = lock_conn!(self.conn);
         conn.execute(
             "INSERT INTO tool_adapters
-             (id, name, vendor, description, default_path, current_path, project_subdir, is_builtin, is_enabled, color, sort_order)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+             (id, name, vendor, description, default_path, current_path, is_builtin, is_enabled, color, sort_order)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 tool.id,
                 tool.name,
@@ -501,7 +458,6 @@ impl Database {
                 tool.description,
                 tool.default_path,
                 tool.current_path,
-                tool.project_subdir,
                 tool.is_builtin as i64,
                 tool.is_enabled as i64,
                 tool.color,
@@ -517,13 +473,12 @@ impl Database {
         let affected = conn
             .execute(
                 "UPDATE tool_adapters SET name = ?1, vendor = ?2, description = ?3,
-                 current_path = ?4, project_subdir = ?5, is_enabled = ?6, color = ?7 WHERE id = ?8",
+                 current_path = ?4, is_enabled = ?5, color = ?6 WHERE id = ?7",
                 params![
                     tool.name,
                     tool.vendor,
                     tool.description,
                     tool.current_path,
-                    tool.project_subdir,
                     tool.is_enabled as i64,
                     tool.color,
                     tool.id
@@ -683,45 +638,3 @@ impl Database {
     }
 }
 
-#[cfg(test)]
-mod legacy_schema_tests {
-    use super::*;
-
-    /// 回归：旧 schema 库（tool_adapters 无 project_subdir 列）走正常初始化路径
-    /// 不得 panic——create_tables 必须先于任何查询补齐新增列
-    /// （曾因列补齐排在 seed_builtin_tools 查询之后导致启动即崩）
-    #[test]
-    fn init_at_adds_project_subdir_to_legacy_tool_adapters() {
-        let temp = tempfile::tempdir().unwrap();
-        let db_path = temp.path().join("legacy.db");
-        {
-            let conn = rusqlite::Connection::open(&db_path).unwrap();
-            conn.execute_batch(
-                "CREATE TABLE tool_adapters (
-                    id TEXT PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    vendor TEXT NOT NULL DEFAULT 'Custom',
-                    description TEXT NOT NULL DEFAULT '',
-                    default_path TEXT NOT NULL,
-                    current_path TEXT NOT NULL,
-                    is_builtin INTEGER NOT NULL DEFAULT 0,
-                    is_enabled INTEGER NOT NULL DEFAULT 1,
-                    color TEXT NOT NULL DEFAULT '#4F46E5',
-                    sort_order INTEGER NOT NULL DEFAULT 0
-                );
-                INSERT INTO tool_adapters (id, name, default_path, current_path, is_builtin)
-                 VALUES ('claude-code', 'Claude Code', '~/.claude/skills', '~/.claude/skills', 1);",
-            )
-            .unwrap();
-        }
-
-        let db = Database::init_at(&db_path).expect("init legacy db must not panic");
-        let tools = db.list_tool_adapters().expect("list tools");
-        let claude = tools
-            .iter()
-            .find(|t| t.id == "claude-code")
-            .expect("claude-code row");
-        // reconcile 回填已证实的项目内目录约定
-        assert_eq!(claude.project_subdir, ".claude/skills");
-    }
-}
