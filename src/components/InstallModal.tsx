@@ -153,14 +153,6 @@ export const InstallModal: React.FC<InstallModalProps> = ({
                 <div>
                   <div className="font-bold text-slate-900 text-sm flex items-center gap-2">
                     <span>{item.displayName}</span>
-                    {/* latestCommit 实际可能是分支名：仅 7-40 位十六进制 SHA 才展示为 commit，分支名按分支展示，空值不渲染 */}
-                    {item.latestCommit && (
-                      <span className="font-mono text-[10px] bg-slate-200/80 text-slate-700 px-2 py-0.5 rounded-md">
-                        {/^[0-9a-f]{7,40}$/i.test(item.latestCommit)
-                          ? `commit ${item.latestCommit}`
-                          : `分支 ${item.latestCommit}`}
-                      </span>
-                    )}
                   </div>
                   <p className="text-slate-600 mt-1 text-xs leading-relaxed">{item.description}</p>
                 </div>

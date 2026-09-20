@@ -145,7 +145,7 @@ export const SkillCard: React.FC<SkillCardProps> = ({
               {skill.hasUpdate && (
                 <span className="inline-flex items-center gap-1.5 text-[10px] font-semibold px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300 shadow-2xs">
                   <span className="w-1.5 h-1.5 rounded-full bg-amber-600 animate-pulse"></span>
-                  <span>可更新至 {skill.latestCommit}</span>
+                  <span>有可用更新</span>
                 </span>
               )}
 
