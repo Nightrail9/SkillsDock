@@ -98,11 +98,10 @@ impl SyncMethod {
 
 /// `inspect_destination` 的调用场景：决定悬空 symlink / 普通文件如何分类。
 /// 区别的动机是数据安全：卸载与重部署不能因为"看起来能覆盖"就删掉用户文件。
+/// （安装/新建分发场景不走此分类——由 replace_dest_with_copy 的原子替换兜底，
+/// 旧值先备份、失败回滚，语义更强。）
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum DestCheckMode {
-    /// 安装/建链场景：悬空 symlink 与普通文件都视为可安全覆盖（Ok(None)），
-    /// 由调用方备份旧值后移除再建新链接
-    Install,
     /// 重部署场景：悬空 symlink（无数据风险）可安全覆盖；普通文件仍按外来内容拒绝
     Redeploy,
     /// 卸载场景：悬空 symlink 与普通文件一律按外来内容 Err 拒绝，绝不删用户文件
@@ -955,8 +954,8 @@ impl SkillService {
     /// `inspect_destination` 的调用场景分类见模块级 `DestCheckMode`。
     /// 目标归属检查：symlink 解析后指向 source，或目录内容与 source 哈希相同 → Ok(Some)；
     /// 目标不存在 → Ok(None)；同名外来内容 → Err（拒绝覆盖）。
-    /// 悬空 symlink 无数据损失风险，Install/Redeploy 归为可安全覆盖（Ok(None)）；
-    /// 普通文件仅 Install 归为可安全覆盖；Uninstall 场景两者都归为外来内容（Err）。
+    /// 悬空 symlink 无数据损失风险，Redeploy 归为可安全覆盖（Ok(None)）；
+    /// Uninstall 场景悬空 symlink 与普通文件都归为外来内容（Err）。
     fn inspect_destination(
         source: &Path,
         destination: &Path,
@@ -983,7 +982,7 @@ impl SkillService {
             ) {
                 return Ok(Some(()));
             }
-            // 悬空 symlink：目标不存在、无数据损失风险，安装/重部署场景可安全覆盖
+            // 悬空 symlink：目标不存在、无数据损失风险，重部署场景可安全覆盖
             if resolved.canonicalize().is_err() && !matches!(mode, DestCheckMode::Uninstall) {
                 return Ok(None);
             }
@@ -996,9 +995,6 @@ impl SkillService {
                     return Ok(Some(()));
                 }
             }
-        } else if matches!(mode, DestCheckMode::Install) {
-            // 普通文件：仅安装场景可安全覆盖（旧值由调用方备份后移除）
-            return Ok(None);
         }
 
         Err(anyhow!(format_skill_error(
@@ -1205,7 +1201,34 @@ impl SkillService {
 // ========== 分发 / 安装 / 卸载 ==========
 
 impl SkillService {
-    /// 技能的规范存储目录（全局：中央库；项目：`<project>/.claude/skills`）
+    /// 项目级技能在中央库中的命名空间键：项目路径清洗（非字母数字替 `_`、截断 40）
+    /// 拼接 8 位 FNV-1a 稳定哈希。保证不同项目同名技能、项目与全局同名技能互不碰撞，
+    /// 同时避开 Windows 非法字符与超长路径
+    fn project_storage_namespace(project_path: &str) -> String {
+        let sanitized: String = project_path
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect();
+        let trimmed: String = sanitized.chars().take(40).collect();
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for byte in project_path.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        format!("{trimmed}-{hash:016x}")
+    }
+
+    /// 项目级技能的旧版存储目录（迁移前：原文件直接在 `<project>/.claude/skills/<dir>`）
+    fn legacy_project_storage_dir(project_path: &str, directory: &str) -> PathBuf {
+        Path::new(project_path)
+            .join(".claude")
+            .join("skills")
+            .join(directory)
+    }
+
+    /// 技能的规范存储目录（全局：中央库；项目：`<library>/projects/<项目键>/<dir>`）。
+    /// 项目级带旧版兜底：新位置不存在且旧位置存在时返回旧位置，
+    /// 保证存量未迁移完成的安装仍可读、可更新、可卸载
     fn skill_storage_dir(db: &Database, record: &SkillRecord) -> Result<PathBuf> {
         let directory = Self::require_valid_directory(&record.directory)?;
         if record.is_project() {
@@ -1213,13 +1236,31 @@ impl SkillService {
                 .project_path
                 .as_deref()
                 .ok_or_else(|| anyhow!("项目级 Skill {} 缺少 project_path", record.id))?;
-            Ok(Path::new(project_path)
-                .join(".claude")
-                .join("skills")
-                .join(directory))
+            let new_dir = Self::get_library_dir(db)?
+                .join("projects")
+                .join(Self::project_storage_namespace(project_path))
+                .join(&directory);
+            if new_dir.exists() {
+                return Ok(new_dir);
+            }
+            let legacy = Self::legacy_project_storage_dir(project_path, &directory);
+            if legacy.exists() {
+                return Ok(legacy);
+            }
+            Ok(new_dir)
         } else {
             Ok(Self::get_library_dir(db)?.join(directory))
         }
+    }
+
+    /// 项目内某工具的技能目录根：`<project>/<tool.project_subdir>`；
+    /// 工具未配置项目内目录时返回 None（不参与项目级分发）
+    fn project_tool_root(tool: &ToolAdapter, project_path: &str) -> Option<PathBuf> {
+        let subdir = tool.project_subdir.trim();
+        if subdir.is_empty() {
+            return None;
+        }
+        Some(Path::new(project_path).join(subdir))
     }
 
     /// 工具的技能根目录（current_path 展开 ~）
@@ -1237,16 +1278,21 @@ impl SkillService {
             .collect())
     }
 
-    /// 分发技能到一个工具目录（symlink 优先按部署方式回退 copy）
-    pub fn deploy_to_tool(db: &Database, record: &SkillRecord, tool: &ToolAdapter) -> Result<()> {
+    /// 分发技能到一个工具目录（symlink 优先按部署方式回退 copy）。
+    /// dest_root 为工具技能根目录：全局走 tool_root，项目内走 project_tool_root
+    fn deploy_to_tool_at(
+        db: &Database,
+        record: &SkillRecord,
+        tool: &ToolAdapter,
+        dest_root: &Path,
+    ) -> Result<()> {
         let directory = Self::require_valid_directory(&record.directory)?;
         let source = Self::skill_storage_dir(db, record)?;
         Self::validate_sync_source_dir(&source, &directory)?;
 
-        let tool_root = Self::tool_root(tool)?;
-        fs::create_dir_all(&tool_root)
-            .with_context(|| format!("创建工具技能目录失败: {}", tool_root.display()))?;
-        let dest = tool_root.join(&directory);
+        fs::create_dir_all(dest_root)
+            .with_context(|| format!("创建工具技能目录失败: {}", dest_root.display()))?;
+        let dest = dest_root.join(&directory);
 
         // 工具目录与技能库同源时不做任何文件操作（否则会删掉源再重建）
         if Self::paths_alias(&source, &dest) {
@@ -1288,10 +1334,22 @@ impl SkillService {
         }
     }
 
-    /// 从工具目录移除技能（容错删除 symlink 或真实目录）
-    pub fn remove_from_tool(db: &Database, record: &SkillRecord, tool: &ToolAdapter) -> Result<()> {
+    /// 分发技能到工具的全局技能目录
+    pub fn deploy_to_tool(db: &Database, record: &SkillRecord, tool: &ToolAdapter) -> Result<()> {
+        let root = Self::tool_root(tool)?;
+        Self::deploy_to_tool_at(db, record, tool, &root)
+    }
+
+    /// 从工具目录移除技能（容错删除 symlink 或真实目录）。
+    /// dest_root 为工具技能根目录：全局走 tool_root，项目内走 project_tool_root
+    fn remove_from_tool_at(
+        db: &Database,
+        record: &SkillRecord,
+        tool: &ToolAdapter,
+        dest_root: &Path,
+    ) -> Result<()> {
         let directory = Self::require_valid_directory(&record.directory)?;
-        let dest = Self::tool_root(tool)?.join(&directory);
+        let dest = dest_root.join(&directory);
         // 工具目录与技能库同源/重叠时跳过（否则会删掉库内源目录）
         if let Ok(source) = Self::skill_storage_dir(db, record) {
             if Self::paths_overlap(&source, &dest) {
@@ -1308,6 +1366,12 @@ impl SkillService {
             Self::remove_path(&dest)?;
         }
         Ok(())
+    }
+
+    /// 从工具的全局技能目录移除技能
+    pub fn remove_from_tool(db: &Database, record: &SkillRecord, tool: &ToolAdapter) -> Result<()> {
+        let root = Self::tool_root(tool)?;
+        Self::remove_from_tool_at(db, record, tool, &root)
     }
 
     /// 统一安装入口（GitHub 仓库 / skills.sh 注册表坐标）
@@ -1517,6 +1581,8 @@ impl SkillService {
                 .filter(|d| !d.trim().is_empty())
                 .unwrap_or(meta_name),
             description: meta_desc.or(input.description.clone()),
+            display_description: None,
+            description_status: "pending".to_string(),
             directory: install_name.clone(),
             tags: input.tags.clone().unwrap_or_default(),
             scope: SKILL_SCOPE_GLOBAL.to_string(),
@@ -1630,7 +1696,26 @@ impl SkillService {
                 Ok(Some(tool)) => tool,
                 _ => continue,
             };
-            match Self::deploy_to_tool(db, record, &tool) {
+            // 项目级技能分发到项目内目录；全局技能分发到工具全局目录
+            let result = if record.is_project() {
+                match record
+                    .project_path
+                    .as_deref()
+                    .and_then(|p| Self::project_tool_root(&tool, p))
+                {
+                    Some(dest_root) => Self::deploy_to_tool_at(db, record, &tool, &dest_root),
+                    None => {
+                        log::warn!(
+                            "工具 {} 未配置项目内技能目录，跳过部署（可在「AI 工具」页配置）",
+                            tool.id
+                        );
+                        continue;
+                    }
+                }
+            } else {
+                Self::deploy_to_tool(db, record, &tool)
+            };
+            match result {
                 Ok(()) => deployed.push(tool_id.clone()),
                 Err(err) => {
                     log::warn!("部署 Skill {} 到工具 {} 失败: {err}", record.id, tool_id)
@@ -1706,7 +1791,7 @@ impl SkillService {
 
         // 网络 I/O 结束，冲突复查 + 落盘 + 入库同一临界区
         let _guard = state_write_guard();
-        // 项目级不做工具部署，但记录用户安装时选择的工具偏好
+        // 记录用户安装时选择的工具；安装时按各工具的项目内目录实际分发
         let enabled_tools = Self::validated_tool_ids(db, tool_ids)?;
         Self::install_dir_to_project(
             db,
@@ -1827,7 +1912,6 @@ impl SkillService {
         install_name: &str,
         meta: ProjectInstallMeta,
     ) -> Result<SkillRecord> {
-        let project_root = PathBuf::from(&project.2);
         let project_key = project.2.clone();
 
         // 冲突复查 + 落盘 + 入库同一临界区（调用方持写锁）
@@ -1844,82 +1928,34 @@ impl SkillService {
         };
         let id = Self::project_skill_id(&base_key, &existing_skills, &project_key);
 
-        let project_skills_dir = project_root.join(".claude").join("skills");
-        let dest = project_skills_dir.join(install_name);
-        if dest.exists() || Self::is_symlink(&dest) {
-            return Err(anyhow!("项目技能目录已存在，拒绝覆盖: {}", dest.display()));
+        // 原文件落中央库命名空间（复用原子替换；失败即 Err，不动 DB）
+        let storage_dir = Self::get_library_dir(db)?
+            .join("projects")
+            .join(Self::project_storage_namespace(&project_key))
+            .join(install_name);
+        if storage_dir.exists() || Self::is_symlink(&storage_dir) {
+            return Err(anyhow!(
+                "项目技能在中央库中已存在，拒绝覆盖: {}",
+                storage_dir.display()
+            ));
         }
-        let linked_dir = project_root.join("skills");
-        let linked_dest = linked_dir.join(install_name);
+        Self::replace_dest_with_copy(source, &storage_dir, install_name)?;
 
-        fs::create_dir_all(&project_skills_dir)?;
-        Self::copy_dir_recursive(source, &dest)?;
+        // 筛选出实际参与分发的工具：已启用且配置了项目内技能目录
+        let tools = db.list_tool_adapters()?;
+        let deploy_tools: Vec<ToolAdapter> = tools
+            .into_iter()
+            .filter(|t| t.is_enabled && meta.enabled_tools.iter().any(|id| id == &t.id))
+            .collect();
+        let deployed_tool_ids: Vec<String> = deploy_tools
+            .iter()
+            .filter(|t| Self::project_tool_root(t, &project_key).is_some())
+            .map(|t| t.id.clone())
+            .collect();
 
-        // 建链接；同名外来内容拒绝覆盖，同内容副本/已指向 dest 的链接保留；
-        // 悬空 symlink/普通文件视为可安全覆盖：旧值先备份到旁路，DB 落库成功后再删备份，
-        // 任一环节失败则还原旧值，避免毁掉用户留下的文件
-        let mut link_created = false;
-        let mut link_backup: Option<PathBuf> = None;
-        let link_result: Result<()> = (|| {
-            fs::create_dir_all(&linked_dir)?;
-            if Self::inspect_destination(&dest, &linked_dest, install_name, DestCheckMode::Install)?
-                .is_none()
-            {
-                if linked_dest.symlink_metadata().is_ok() {
-                    let backup = linked_dir.join(format!("{install_name}.skilldock-old"));
-                    Self::cleanup_staging(&backup);
-                    fs::rename(&linked_dest, &backup).map_err(|e| {
-                        anyhow!(
-                            "备份目标位置的旧内容失败: {} -> {}: {e}",
-                            linked_dest.display(),
-                            backup.display()
-                        )
-                    })?;
-                    link_backup = Some(backup);
-                }
-                let created = (|| {
-                    match SyncMethod::from_str(&meta.deploy_method) {
-                        SyncMethod::Symlink => Self::create_symlink(&dest, &linked_dest)?,
-                        SyncMethod::Copy => Self::copy_dir_recursive(&dest, &linked_dest)?,
-                        SyncMethod::Auto => {
-                            if let Err(err) = Self::create_symlink(&dest, &linked_dest) {
-                                log::warn!("项目技能 symlink 失败，回退为复制: {err}");
-                                Self::copy_dir_recursive(&dest, &linked_dest)?;
-                            }
-                        }
-                    }
-                    Ok(())
-                })();
-                match created {
-                    Ok(()) => {
-                        link_created = true;
-                    }
-                    Err(err) => {
-                        // 建链失败：旧值还原回原位（还原失败不覆盖原始错误，仅告警）
-                        if let Some(backup) = link_backup.take() {
-                            if let Err(restore_err) = fs::rename(&backup, &linked_dest) {
-                                log::warn!(
-                                    "还原旧内容失败 {} -> {}: {restore_err}",
-                                    backup.display(),
-                                    linked_dest.display()
-                                );
-                            }
-                        }
-                        return Err(err);
-                    }
-                }
-            }
-            Ok(())
-        })();
-        if let Err(err) = link_result {
-            if let Err(clean_err) = fs::remove_dir_all(&dest) {
-                log::warn!("链接失败回滚：删除目录 {} 失败: {clean_err}", dest.display());
-            }
-            return Err(err);
-        }
-
-        let content_hash = Self::compute_dir_hash(&dest).ok();
-        let skill_md = dest.join("SKILL.md");
+        // 先构造记录（未落库）：deploy_to_tool_at 需要按 record 解析存储目录与部署方式
+        let content_hash = Self::compute_dir_hash(&storage_dir).ok();
+        let skill_md = storage_dir.join("SKILL.md");
         let (meta_name, meta_desc) = Self::read_skill_name_desc(&skill_md, install_name);
 
         let now = chrono::Utc::now().timestamp();
@@ -1928,6 +1964,8 @@ impl SkillService {
             name: meta_name.clone(),
             display_name: meta.display_name.clone().unwrap_or(meta_name),
             description: meta_desc.or(meta.input_description.clone()),
+            display_description: None,
+            description_status: "pending".to_string(),
             directory: install_name.to_string(),
             tags: meta.tags.clone(),
             scope: SKILL_SCOPE_PROJECT.to_string(),
@@ -1945,7 +1983,7 @@ impl SkillService {
             latest_commit: None,
             has_update: false,
             content_hash,
-            enabled_tools: meta.enabled_tools.clone(),
+            enabled_tools: deployed_tool_ids,
             deploy_method: meta.deploy_method.clone(),
             installed_at: now,
             updated_at: 0,
@@ -1953,42 +1991,62 @@ impl SkillService {
             license: None,
         };
 
-        if let Err(err) = db.save_skill(&record) {
-            if let Some(backup) = link_backup.take() {
-                // 有被替换的旧值：删掉新链接并把旧值还原回原位
-                if let Err(clean_err) = Self::remove_path(&linked_dest) {
+        // 按选择分发到各工具的项目内技能目录（symlink / copy / auto 随部署方式）。
+        // 悬空 symlink 可安全覆盖；普通文件按外来内容拒绝（inspect_destination 语义），
+        // 绝不误删用户放在项目技能目录里的文件
+        let mut deployed: Vec<PathBuf> = Vec::new();
+        let deploy_result: Result<()> = (|| {
+            for tool in &deploy_tools {
+                let Some(dest_root) = Self::project_tool_root(tool, &project_key) else {
                     log::warn!(
-                        "保存失败回滚：移除链接 {} 失败: {clean_err}",
-                        linked_dest.display()
+                        "工具 {} 未配置项目内技能目录，跳过项目级分发（可在「AI 工具」页配置）",
+                        tool.id
                     );
-                }
-                if let Err(restore_err) = fs::rename(&backup, &linked_dest) {
-                    log::warn!(
-                        "保存失败回滚：还原旧内容 {} -> {} 失败: {restore_err}",
-                        backup.display(),
-                        linked_dest.display()
-                    );
-                }
-            } else if link_created {
-                if let Err(clean_err) = Self::remove_path(&linked_dest) {
-                    log::warn!(
-                        "保存失败回滚：移除链接 {} 失败: {clean_err}",
-                        linked_dest.display()
-                    );
+                    continue;
+                };
+                let dest = dest_root.join(install_name);
+                Self::deploy_to_tool_at(db, &record, tool, &dest_root)?;
+                deployed.push(dest);
+            }
+            Ok(())
+        })();
+        if let Err(err) = deploy_result {
+            // 分发失败整体回滚：删已部署条目 + 删中央库原文件，不留半成品
+            for dest in deployed.iter().rev() {
+                if let Err(clean_err) = Self::remove_path(dest) {
+                    log::warn!("分发失败回滚：移除 {} 失败: {clean_err}", dest.display());
                 }
             }
-            if let Err(clean_err) = fs::remove_dir_all(&dest) {
-                log::warn!("保存失败回滚：删除目录 {} 失败: {clean_err}", dest.display());
+            if let Err(clean_err) = Self::remove_path(&storage_dir) {
+                log::warn!(
+                    "分发失败回滚：删除中央库原文件 {} 失败: {clean_err}",
+                    storage_dir.display()
+                );
+            }
+            return Err(err);
+        }
+
+        if let Err(err) = db.save_skill(&record) {
+            for dest in deployed.iter().rev() {
+                if let Err(clean_err) = Self::remove_path(dest) {
+                    log::warn!("保存失败回滚：移除 {} 失败: {clean_err}", dest.display());
+                }
+            }
+            if let Err(clean_err) = Self::remove_path(&storage_dir) {
+                log::warn!(
+                    "保存失败回滚：删除中央库原文件 {} 失败: {clean_err}",
+                    storage_dir.display()
+                );
             }
             return Err(err.into());
         }
 
-        // 落库成功：被替换掉的旧值再无保留必要
-        if let Some(backup) = link_backup.take() {
-            Self::cleanup_staging(&backup);
-        }
-
-        log::info!("Skill {} 已安装到项目 {}", record.name, project_key);
+        log::info!(
+            "Skill {} 已安装到项目 {}（原文件入中央库，已分发 {} 个工具）",
+            record.name,
+            project_key,
+            deployed.len()
+        );
         Ok(record)
     }
 
@@ -2002,6 +2060,8 @@ impl SkillService {
         zip_stem: Option<&str>,
         source_type: &str,
         source_url: Option<&str>,
+        tool_ids: &[String],
+        deploy_method: Option<&str>,
     ) -> Result<Option<SkillRecord>> {
         let skill_md = skill_dir.join("SKILL.md");
         let meta = if skill_md.exists() {
@@ -2034,8 +2094,8 @@ impl SkillService {
                 display_name: None,
                 input_description: None,
                 tags: vec![],
-                enabled_tools: vec![],
-                deploy_method: "auto".to_string(),
+                enabled_tools: Self::validated_tool_ids(db, tool_ids)?,
+                deploy_method: deploy_method.unwrap_or("auto").to_string(),
             },
         )?;
         Ok(Some(record))
@@ -2118,6 +2178,8 @@ impl SkillService {
                     zip_stem.as_deref(),
                     "local",
                     None,
+                    &tool_ids,
+                    deploy_method,
                 )?,
                 None => Self::install_scanned_dir(
                     db,
@@ -2199,6 +2261,8 @@ impl SkillService {
             name: name.clone(),
             display_name: name,
             description,
+            display_description: None,
+            description_status: "pending".to_string(),
             directory: install_name.clone(),
             tags: vec![],
             scope: SKILL_SCOPE_GLOBAL.to_string(),
@@ -2451,6 +2515,8 @@ impl SkillService {
             name: name.clone(),
             display_name: name,
             description,
+            display_description: None,
+            description_status: "pending".to_string(),
             directory: install_name.clone(),
             tags: vec![],
             scope: SKILL_SCOPE_GLOBAL.to_string(),
@@ -2590,18 +2656,42 @@ impl SkillService {
         };
 
         let project_root = PathBuf::from(&project_path);
-        let source = project_root.join(".claude").join("skills").join(&directory);
-        let linked = project_root.join("skills").join(&directory);
+        // 规范存储目录（新模型中央库命名空间 / 旧版项目内位置，含兜底解析）
+        let storage = Self::skill_storage_dir(db, record)?;
 
-        // 仅删除能验证归属的链接/副本；悬空 symlink/普通文件同样按外来内容保留，
-        // 防止卸载误删用户放在 skills/ 下的文件
-        if linked.exists() || Self::is_symlink(&linked) {
-            match Self::inspect_destination(&source, &linked, &directory, DestCheckMode::Uninstall) {
+        // 1. 各工具项目内分发条目（record.enabled_tools 记录的工具）。
+        // 与全局卸载同语义：目标位置即工具纳管命名空间，存在即删
+        let tools = db.list_tool_adapters()?;
+        for tool_id in &record.enabled_tools {
+            let Some(tool) = tools.iter().find(|t| &t.id == tool_id) else {
+                continue;
+            };
+            let Some(dest_root) = Self::project_tool_root(tool, &project_path) else {
+                continue;
+            };
+            Self::remove_from_tool_at(db, record, tool, &dest_root).with_context(|| {
+                format!(
+                    "卸载中止：删除工具 {} 的项目内分发失败，技能记录已保留",
+                    tool.id
+                )
+            })?;
+        }
+
+        // 2. 遗留约定 `<project>/skills/<dir>`（旧版第二条链接）：仅删能验证归属的，
+        // 悬空 symlink/普通文件按外来内容保留，防误删用户文件
+        let legacy_linked = project_root.join("skills").join(&directory);
+        if legacy_linked.exists() || Self::is_symlink(&legacy_linked) {
+            match Self::inspect_destination(
+                &storage,
+                &legacy_linked,
+                &directory,
+                DestCheckMode::Uninstall,
+            ) {
                 Ok(Some(_)) => {
-                    Self::remove_path(&linked).with_context(|| {
+                    Self::remove_path(&legacy_linked).with_context(|| {
                         format!(
                             "卸载中止：删除链接 {} 失败，技能记录已保留",
-                            linked.display()
+                            legacy_linked.display()
                         )
                     })?;
                 }
@@ -2610,17 +2700,51 @@ impl SkillService {
                     log::warn!(
                         "项目级 Skill {} 的 skills 目录存在外来内容，保留 {}: {err}",
                         record.id,
-                        linked.display()
+                        legacy_linked.display()
                     );
                 }
             }
         }
 
-        if source.exists() {
-            fs::remove_dir_all(&source).with_context(|| {
+        // 3. 遗留约定 `<project>/.claude/skills/<dir>`（旧版原文件位置；新模型下也可能是
+        // claude-code 的项目内分发条目，步骤 1 已删过一次）。同样只删能验证归属的
+        let legacy_source = project_root.join(".claude").join("skills").join(&directory);
+        if legacy_source.exists() || Self::is_symlink(&legacy_source) {
+            if Self::paths_alias(&storage, &legacy_source) {
+                // 兜底解析下二者本就是同一目录，交给步骤 4 处理
+            } else {
+                match Self::inspect_destination(
+                    &storage,
+                    &legacy_source,
+                    &directory,
+                    DestCheckMode::Uninstall,
+                ) {
+                    Ok(Some(_)) => {
+                        Self::remove_path(&legacy_source).with_context(|| {
+                            format!(
+                                "卸载中止：删除遗留项目技能目录 {} 失败，技能记录已保留",
+                                legacy_source.display()
+                            )
+                        })?;
+                    }
+                    Ok(None) => {}
+                    Err(err) => {
+                        log::warn!(
+                            "项目级 Skill {} 的 .claude/skills 存在外来内容，保留 {}: {err}",
+                            record.id,
+                            legacy_source.display()
+                        );
+                    }
+                }
+            }
+        }
+
+        // 4. 中央库（或旧版位置）中的原文件
+        if storage.exists() {
+            Self::remove_path(&storage).with_context(|| {
                 format!(
-                    "卸载中止：删除项目技能目录 {} 失败，技能记录已保留",
-                    source.display()
+                    "卸载中止：删除技能原文件 {} 失败，技能记录已保留",
+                    storage.display()
                 )
             })?;
         }
@@ -2637,25 +2761,41 @@ impl SkillService {
             .get_skill(id)?
             .ok_or_else(|| anyhow!("Skill not found: {id}"))?;
 
-        // 项目级 Skill 不参与工具分发（经 <project>/.claude/skills + skills 链接生效），
-        // 明确报错而非静默成功，避免前端"点了没反应"的死交互
-        if record.is_project() {
-            return Err(anyhow!(
-                "项目级技能不支持工具开关：其通过项目内 .claude/skills 与 skills 链接直接生效"
-            ));
-        }
-
         let tool = db
             .get_tool_adapter(tool_id)?
             .ok_or_else(|| anyhow!("Tool not found: {tool_id}"))?;
 
         if enabled {
-            Self::deploy_to_tool(db, &record, &tool)?;
+            if record.is_project() {
+                // 项目级：分发到该工具配置的项目内技能目录
+                let project_path = record
+                    .project_path
+                    .as_deref()
+                    .ok_or_else(|| anyhow!("项目级 Skill {} 缺少 project_path", record.id))?
+                    .to_string();
+                let dest_root = Self::project_tool_root(&tool, &project_path).ok_or_else(|| {
+                    anyhow!(
+                        "工具 {} 未配置项目内技能目录，无法项目级分发（可在「AI 工具」页配置）",
+                        tool.id
+                    )
+                })?;
+                Self::deploy_to_tool_at(db, &record, &tool, &dest_root)?;
+            } else {
+                Self::deploy_to_tool(db, &record, &tool)?;
+            }
             if !record.enabled_tools.iter().any(|t| t == tool_id) {
                 record.enabled_tools.push(tool_id.to_string());
             }
         } else {
-            Self::remove_from_tool(db, &record, &tool)?;
+            if record.is_project() {
+                if let Some(project_path) = record.project_path.as_deref() {
+                    if let Some(dest_root) = Self::project_tool_root(&tool, project_path) {
+                        Self::remove_from_tool_at(db, &record, &tool, &dest_root)?;
+                    }
+                }
+            } else {
+                Self::remove_from_tool(db, &record, &tool)?;
+            }
             record.enabled_tools.retain(|t| t != tool_id);
         }
         db.update_skill_enabled_tools(id, &record.enabled_tools)?;
@@ -2792,10 +2932,11 @@ impl SkillService {
                 };
 
                 let local_base = if skill.is_project() {
-                    skill
-                        .project_path
-                        .as_ref()
-                        .map(|path| Path::new(path).join(".claude").join("skills"))
+                    // 项目级：以中央库规范存储目录为基准（新旧布局均可解析），
+                    // 避免只分发到非 .claude 工具时旧位置缺失导致误报更新
+                    Self::skill_storage_dir(db, skill)
+                        .ok()
+                        .and_then(|dir| dir.parent().map(|p| p.to_path_buf()))
                 } else {
                     Some(library.clone())
                 };
@@ -2915,14 +3056,24 @@ impl SkillService {
         let dest = Self::skill_storage_dir(db, &current)?;
         Self::replace_dest_with_copy(&source, &dest, &current.directory)?;
 
-        // 项目级：刷新 <project>/skills/<dir> 链接（symlink 指向不变则不动，copy 重新替换）
+        // 项目级：刷新各工具项目内目录中的分发（symlink 指向不变则不动，copy 重新替换）
         if current.is_project() {
             if let Some(project_path) = current.project_path.as_ref() {
-                let linked = Path::new(project_path)
-                    .join("skills")
-                    .join(&current.directory);
-                if (linked.exists() || Self::is_symlink(&linked)) && !Self::is_symlink(&linked) {
-                    Self::replace_dest_with_copy(&dest, &linked, &current.directory)?;
+                let tools = db.list_tool_adapters()?;
+                for tool_id in &current.enabled_tools {
+                    let Some(tool) = tools.iter().find(|t| &t.id == tool_id) else {
+                        continue;
+                    };
+                    let Some(dest_root) = Self::project_tool_root(tool, project_path) else {
+                        continue;
+                    };
+                    let linked = dest_root.join(&current.directory);
+                    // symlink 指向 dest，内容更新自动可见；copy 需要重新替换
+                    if (linked.exists() || Self::is_symlink(&linked))
+                        && !Self::is_symlink(&linked)
+                    {
+                        Self::replace_dest_with_copy(&dest, &linked, &current.directory)?;
+                    }
                 }
             }
         } else {
@@ -2957,6 +3108,8 @@ impl SkillService {
         let mut updated = current.clone();
         updated.name = new_name;
         updated.description = new_description;
+        updated.display_description = None;
+        updated.description_status = "pending".to_string();
         updated.source_branch = Some(used_branch);
         updated.current_commit = current_commit.or(current.current_commit.clone());
         updated.latest_commit = updated.current_commit.clone();
@@ -3115,8 +3268,10 @@ impl SkillService {
                 },
                 name: name.clone(),
                 display_name: name,
-                description,
-                directory: dir_name.clone(),
+            description,
+            display_description: None,
+            description_status: "pending".to_string(),
+            directory: dir_name.clone(),
                 tags: vec![],
                 scope: SKILL_SCOPE_GLOBAL.to_string(),
                 project_id: None,
@@ -3372,13 +3527,23 @@ impl SkillService {
             .iter()
             .map(|t| {
                 let flagged = record.enabled_tools.iter().any(|id| id == &t.id);
-                // DB 标记与落盘双重确认：工具目录被外部删除后不再显示"已部署"
+                // DB 标记与落盘双重确认：工具目录被外部删除后不再显示"已部署"。
+                // 项目级技能检查项目内目录（project_subdir），全局检查工具全局目录
                 let actually_deployed = flagged
                     && Self::require_valid_directory(&record.directory)
                         .map(|directory| {
-                            let dest = Self::tool_root(t)
-                                .map(|root| root.join(directory))
-                                .unwrap_or_default();
+                            let dest = if record.is_project() {
+                                record
+                                    .project_path
+                                    .as_deref()
+                                    .and_then(|p| Self::project_tool_root(t, p))
+                                    .map(|root| root.join(&directory))
+                            } else {
+                                Self::tool_root(t)
+                                    .ok()
+                                    .map(|root| root.join(&directory))
+                            }
+                            .unwrap_or_default();
                             dest.exists() || Self::is_symlink(&dest)
                         })
                         .unwrap_or(false);
@@ -3421,7 +3586,14 @@ impl SkillService {
                 record.display_name.clone()
             },
             directory: record.directory.clone(),
-            description: record.description.clone().unwrap_or_default(),
+            description: if record.description_status == "ready" {
+                record.display_description.clone().unwrap_or_else(|| "简介生成失败，可在设置中重试".to_string())
+            } else if record.description_status == "failed" {
+                "简介生成失败，可在设置中重试".to_string()
+            } else {
+                "尚未生成中文简介，请在设置中配置模型后处理".to_string()
+            },
+            description_status: record.description_status.clone(),
             tags: record.tags.clone(),
             scope: record.scope.clone(),
             project_id: record.project_id.clone(),
@@ -3684,56 +3856,187 @@ impl SkillService {
         Ok(affected)
     }
 
-    /// 按当前全局分发方式重建项目级技能的 skills/<dir> 链接/副本
-    /// （分发方式变更后由前端"一键重部署"触发）；外来内容拒绝覆盖
+    /// 按当前全局分发方式重建项目级技能在各工具项目内目录中的链接/副本
+    /// （分发方式变更后由前端"一键重部署"触发）；外来内容拒绝覆盖。
+    /// 原文件以中央库规范存储目录为源，重建后同步持久化 record.deploy_method
     pub fn redeploy_project_links(db: &Database, ids: &[String]) -> Result<usize> {
         let _guard = state_write_guard();
         let method = Self::get_sync_method(db);
+        let method_raw = match method {
+            SyncMethod::Symlink => "symlink",
+            SyncMethod::Copy => "copy",
+            SyncMethod::Auto => "auto",
+        };
+        let tools = db.list_tool_adapters()?;
         let mut done = 0;
         for id in ids {
-            let record = db
+            let mut record = db
                 .get_skill(id)?
                 .ok_or_else(|| anyhow!("Skill not found: {id}"))?;
             if !record.is_project() {
                 continue;
             }
-            let directory = Self::require_valid_directory(&record.directory)?;
+            Self::require_valid_directory(&record.directory)?;
             let project_path = record
                 .project_path
                 .as_deref()
-                .ok_or_else(|| anyhow!("项目级 Skill {} 缺少 project_path", record.id))?;
-            let project_root = PathBuf::from(project_path);
-            let source = project_root.join(".claude").join("skills").join(&directory);
-            Self::validate_sync_source_dir(&source, &directory)?;
-            let linked_dir = project_root.join("skills");
-            let linked = linked_dir.join(&directory);
-            if Self::paths_alias(&source, &linked) {
-                continue;
-            }
-            match Self::inspect_destination(&source, &linked, &directory, DestCheckMode::Redeploy)? {
-                // 已指向 source 或同内容副本：先删旧再按当前方式重建（symlink/copy 切换需要）
-                Some(()) => Self::remove_path(&linked)?,
-                // 不存在：无需处理；悬空 symlink（无数据风险）：移除旧值后再建
-                None => {
-                    if Self::is_symlink(&linked) {
-                        Self::remove_path(&linked)?;
+                .ok_or_else(|| anyhow!("项目级 Skill {} 缺少 project_path", record.id))?
+                .to_string();
+            let source = Self::skill_storage_dir(db, &record)?;
+            Self::validate_sync_source_dir(&source, &record.directory)?;
+
+            for tool_id in &record.enabled_tools {
+                let Some(tool) = tools.iter().find(|t| &t.id == tool_id) else {
+                    continue;
+                };
+                let Some(dest_root) = Self::project_tool_root(tool, &project_path) else {
+                    log::warn!("工具 {} 未配置项目内技能目录，跳过重部署", tool.id);
+                    continue;
+                };
+                let dest = dest_root.join(&record.directory);
+                if Self::paths_alias(&source, &dest) {
+                    continue;
+                }
+                match Self::inspect_destination(
+                    &source,
+                    &dest,
+                    &record.directory,
+                    DestCheckMode::Redeploy,
+                )? {
+                    // 已指向 source 或同内容副本：先删旧再按当前方式重建（symlink/copy 切换需要）
+                    Some(()) => Self::remove_path(&dest)?,
+                    // 不存在：无需处理；悬空 symlink（无数据风险）：移除旧值后再建
+                    None => {
+                        if Self::is_symlink(&dest) {
+                            Self::remove_path(&dest)?;
+                        }
                     }
                 }
-            }
-            fs::create_dir_all(&linked_dir)?;
-            match method {
-                SyncMethod::Symlink => Self::create_symlink(&source, &linked)?,
-                SyncMethod::Copy => Self::copy_dir_recursive(&source, &linked)?,
-                SyncMethod::Auto => {
-                    if let Err(err) = Self::create_symlink(&source, &linked) {
-                        log::warn!("项目技能 symlink 失败，回退为复制: {err}");
-                        Self::copy_dir_recursive(&source, &linked)?;
+                fs::create_dir_all(&dest_root)?;
+                match method {
+                    SyncMethod::Symlink => Self::create_symlink(&source, &dest)?,
+                    SyncMethod::Copy => Self::copy_dir_recursive(&source, &dest)?,
+                    SyncMethod::Auto => {
+                        if let Err(err) = Self::create_symlink(&source, &dest) {
+                            log::warn!("项目技能 symlink 失败，回退为复制: {err}");
+                            Self::copy_dir_recursive(&source, &dest)?;
+                        }
                     }
                 }
+                done += 1;
             }
-            done += 1;
+
+            // 重建后持久化当前方式，后续 toggle 与新建分发保持一致
+            if record.deploy_method != method_raw {
+                record.deploy_method = method_raw.to_string();
+                db.update_skill_metadata(&record)?;
+            }
         }
         Ok(done)
+    }
+
+    /// 存量项目级技能存储布局迁移：原文件从 `<project>/.claude/skills/<dir>`
+    /// 搬到中央库 `<library>/projects/<项目键>/<dir>`，并在原位置按部署方式重建
+    /// （symlink / copy），`enabled_tools` 为空时补 claude-code。
+    /// best-effort：逐条独立，失败仅记录日志并跳过——`skill_storage_dir` 的旧版兜底
+    /// 保证未迁移完成的安装仍可读、可更新、可卸载。
+    /// 返回成功迁移的条数；重复执行幂等（新位置已存在即跳过）。
+    pub fn migrate_project_storage_layout(db: &Database) -> Result<usize> {
+        let skills = db.get_all_skills()?;
+        let mut migrated = 0;
+        for record in skills.values().filter(|s| s.is_project()) {
+            let directory = match Self::require_valid_directory(&record.directory) {
+                Ok(directory) => directory,
+                Err(e) => {
+                    log::error!("项目存储布局迁移跳过 {}：directory 非法: {e}", record.id);
+                    continue;
+                }
+            };
+            let Some(project_path) = record.project_path.as_deref() else {
+                log::error!("项目存储布局迁移跳过 {}：缺少 project_path", record.id);
+                continue;
+            };
+            let new_dir = match Self::get_library_dir(db) {
+                Ok(lib) => lib
+                    .join("projects")
+                    .join(Self::project_storage_namespace(project_path))
+                    .join(&directory),
+                Err(e) => {
+                    log::error!("项目存储布局迁移跳过 {}：{e}", record.id);
+                    continue;
+                }
+            };
+            if new_dir.exists() {
+                continue; // 已是新布局
+            }
+            let legacy = Self::legacy_project_storage_dir(project_path, &directory);
+            if !legacy.exists() {
+                continue; // 没有可迁移的原文件（项目目录已不在等情况）
+            }
+
+            // 1. 移动原文件到中央库命名空间（rename 优先，跨盘 copy+delete）
+            if let Some(parent) = new_dir.parent() {
+                if let Err(e) = fs::create_dir_all(parent) {
+                    log::error!("项目存储布局迁移 {} 失败（创建命名空间目录）: {e}", record.id);
+                    continue;
+                }
+            }
+            let moved: Result<()> = match fs::rename(&legacy, &new_dir) {
+                Ok(()) => Ok(()),
+                Err(_) => (|| {
+                    Self::copy_dir_recursive(&legacy, &new_dir)?;
+                    fs::remove_dir_all(&legacy)?;
+                    Ok(())
+                })(),
+            };
+            if let Err(e) = moved {
+                log::error!(
+                    "项目存储布局迁移 {} 失败（移动原文件 {} -> {}）: {e}",
+                    record.id,
+                    legacy.display(),
+                    new_dir.display()
+                );
+                continue;
+            }
+
+            // 2. 原位置按部署方式重建（失败不致命：原文件已在新位置，仍可读可卸载）
+            let rebuilt: Result<()> = (|| {
+                if let Some(parent) = legacy.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                match SyncMethod::from_str(&record.deploy_method) {
+                    SyncMethod::Symlink => Self::create_symlink(&new_dir, &legacy)?,
+                    SyncMethod::Copy => Self::copy_dir_recursive(&new_dir, &legacy)?,
+                    SyncMethod::Auto => {
+                        if let Err(err) = Self::create_symlink(&new_dir, &legacy) {
+                            log::warn!("项目存储布局迁移 {}：symlink 失败，回退复制: {err}", record.id);
+                            Self::copy_dir_recursive(&new_dir, &legacy)?;
+                        }
+                    }
+                }
+                Ok(())
+            })();
+            if let Err(e) = rebuilt {
+                log::error!(
+                    "项目存储布局迁移 {}：原文件已入中央库，但原位置重建失败: {e}",
+                    record.id
+                );
+            }
+
+            // 3. enabled_tools 为空时补 claude-code（旧安装事实上经 .claude/skills 生效）
+            if record.enabled_tools.is_empty() {
+                if let Err(e) =
+                    db.update_skill_enabled_tools(&record.id, &["claude-code".to_string()])
+                {
+                    log::warn!("项目存储布局迁移 {}：补默认 enabled_tools 失败: {e}", record.id);
+                }
+            }
+            migrated += 1;
+        }
+        if migrated > 0 {
+            log::info!("项目级技能存储布局迁移完成：{migrated} 条");
+        }
+        Ok(migrated)
     }
 }
 
@@ -4194,6 +4497,8 @@ mod tests {
             name: "a".to_string(),
             display_name: "a".to_string(),
             description: None,
+            display_description: None,
+            description_status: "pending".to_string(),
             directory: "a".to_string(),
             tags: vec![],
             scope: SKILL_SCOPE_GLOBAL.to_string(),
@@ -4238,6 +4543,8 @@ mod tests {
             name: "全局技能".to_string(),
             display_name: "全局技能".to_string(),
             description: None,
+            display_description: None,
+            description_status: "pending".to_string(),
             directory: "dup".to_string(),
             tags: vec![],
             scope: SKILL_SCOPE_GLOBAL.to_string(),
@@ -4335,6 +4642,8 @@ mod tests {
             name: directory.to_string(),
             display_name: directory.to_string(),
             description: None,
+            display_description: None,
+            description_status: "pending".to_string(),
             directory: directory.to_string(),
             tags: vec![],
             scope: scope.to_string(),
@@ -4369,6 +4678,7 @@ mod tests {
             description: String::new(),
             default_path: current_path.to_string(),
             current_path: current_path.to_string(),
+            project_subdir: String::new(),
             is_builtin: false,
             is_enabled: true,
             installed_skills_count: 0,
@@ -4376,6 +4686,53 @@ mod tests {
             version: None,
             color: "#000000".to_string(),
         }
+    }
+
+    /// 在 test_tool 基础上配置项目内技能目录
+    fn test_tool_with_subdir(id: &str, current_path: &Path, project_subdir: &str) -> ToolAdapter {
+        let mut tool = test_tool(id, &current_path.display().to_string());
+        tool.project_subdir = project_subdir.to_string();
+        tool
+    }
+
+    fn test_project_meta(install_name: &str, tool_ids: &[&str]) -> ProjectInstallMeta {
+        ProjectInstallMeta {
+            directory: install_name.to_string(),
+            source_type: "github".to_string(),
+            source_repo: Some(format!("owner/{install_name}")),
+            source_branch: Some("main".to_string()),
+            source_subpath: None,
+            source_author: None,
+            source_registry_id: None,
+            source_url: None,
+            source_github_detected: false,
+            current_commit: None,
+            display_name: None,
+            input_description: None,
+            tags: vec![],
+            enabled_tools: tool_ids.iter().map(|s| s.to_string()).collect(),
+            deploy_method: "auto".to_string(),
+        }
+    }
+
+    fn write_source_skill(root: &Path, name: &str) -> PathBuf {
+        let source = root.join(format!("src-{name}"));
+        fs::create_dir_all(&source).unwrap();
+        fs::write(
+            source.join("SKILL.md"),
+            format!("---\nname: {name}\n---\n\n# {name}\n"),
+        )
+        .unwrap();
+        source
+    }
+
+    /// 在中央库 projects 命名空间下找指定技能的原文件目录
+    fn find_in_projects_ns(library: &Path, install_name: &str) -> Option<PathBuf> {
+        fs::read_dir(library.join("projects"))
+            .ok()?
+            .flatten()
+            .map(|e| e.path().join(install_name))
+            .find(|p| p.join("SKILL.md").is_file())
     }
 
     #[test]
@@ -4547,17 +4904,9 @@ mod tests {
             }
         };
 
-        // 悬空 symlink：安装/重部署可安全覆盖；卸载按外来内容拒绝
+        // 悬空 symlink：重部署可安全覆盖；卸载按外来内容拒绝
         let linked = skills_dir.join("my-skill");
         if make_link(&temp.path().join("gone"), &linked) {
-            assert!(SkillService::inspect_destination(
-                &source,
-                &linked,
-                "my-skill",
-                DestCheckMode::Install
-            )
-            .unwrap()
-            .is_none());
             assert!(SkillService::inspect_destination(
                 &source,
                 &linked,
@@ -4575,17 +4924,10 @@ mod tests {
             .is_err());
         }
 
-        // 普通文件：仅安装场景可安全覆盖；重部署/卸载拒绝
+        // 普通文件：重部署/卸载场景一律按外来内容拒绝（安装分发不走此分类，
+        // 由 replace_dest_with_copy 原子替换兜底）
         let file_dest = skills_dir.join("file-skill");
         fs::write(&file_dest, "user data").unwrap();
-        assert!(SkillService::inspect_destination(
-            &source,
-            &file_dest,
-            "file-skill",
-            DestCheckMode::Install
-        )
-        .unwrap()
-        .is_none());
         assert!(SkillService::inspect_destination(
             &source,
             &file_dest,
@@ -4604,11 +4946,7 @@ mod tests {
         // 指向 source 的 symlink：所有场景都认领归属
         let good_link = skills_dir.join("good-skill");
         if make_link(&source, &good_link) {
-            for mode in [
-                DestCheckMode::Install,
-                DestCheckMode::Redeploy,
-                DestCheckMode::Uninstall,
-            ] {
+            for mode in [DestCheckMode::Redeploy, DestCheckMode::Uninstall] {
                 assert!(
                     SkillService::inspect_destination(&source, &good_link, "good-skill", mode)
                         .unwrap()
@@ -4617,5 +4955,301 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ========== 项目级安装：中央库命名空间 + 按工具项目内目录分发 ==========
+
+    #[test]
+    fn project_storage_namespace_is_stable_and_isolated() {
+        // 同一项目键稳定；不同项目键不同（含清洗后可能相同的路径）
+        assert_eq!(
+            SkillService::project_storage_namespace("/home/me/proj"),
+            SkillService::project_storage_namespace("/home/me/proj")
+        );
+        assert_ne!(
+            SkillService::project_storage_namespace("/home/me/a"),
+            SkillService::project_storage_namespace("/home/me/b")
+        );
+        // Windows 盘符/冒号被清洗，不进入文件系统
+        let ns = SkillService::project_storage_namespace("D:\\01-Projects\\demo");
+        assert!(!ns.contains(':'), "命名空间不应含冒号: {ns}");
+        assert!(!ns.contains('\\'), "命名空间不应含反斜杠: {ns}");
+    }
+
+    #[test]
+    fn install_dir_to_project_stores_in_library_and_deploys_to_each_tool() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("library");
+        fs::create_dir_all(&library).unwrap();
+        let db = memory_db_with_library(&library);
+        let project_root = temp.path().join("proj");
+        fs::create_dir_all(&project_root).unwrap();
+        let project = (1i64, "proj".to_string(), project_root.display().to_string(), 1);
+
+        let tool_a =
+            test_tool_with_subdir("tool-a", &temp.path().join("global-a"), ".claude/skills");
+        let tool_b = test_tool_with_subdir("tool-b", &temp.path().join("global-b"), ".codex/skills");
+        db.insert_tool_adapter(&tool_a, 0).unwrap();
+        db.insert_tool_adapter(&tool_b, 1).unwrap();
+
+        let source = write_source_skill(temp.path(), "my-skill");
+        let record = SkillService::install_dir_to_project(
+            &db,
+            &project,
+            &source,
+            "my-skill",
+            test_project_meta("my-skill", &["tool-a", "tool-b"]),
+        )
+        .expect("install to project");
+
+        // 原文件入中央库 projects 命名空间
+        let stored = find_in_projects_ns(&library, "my-skill").expect("库内命名空间存在原文件");
+        assert!(stored.join("SKILL.md").is_file());
+
+        // 两个工具的项目内目录都出现分发（symlink 或 copy 均可，探测内容即可）
+        for subdir in [".claude/skills", ".codex/skills"] {
+            let dest = project_root.join(subdir).join("my-skill");
+            assert!(
+                dest.join("SKILL.md").is_file(),
+                "{subdir} 应存在分发内容"
+            );
+        }
+
+        // 记录实际参与分发的工具
+        assert_eq!(
+            record.enabled_tools,
+            vec!["tool-a".to_string(), "tool-b".to_string()]
+        );
+    }
+
+    #[test]
+    fn install_dir_to_project_isolates_same_name_skills_across_projects() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("library");
+        fs::create_dir_all(&library).unwrap();
+        let db = memory_db_with_library(&library);
+
+        let project_a = temp.path().join("proj-a");
+        let project_b = temp.path().join("proj-b");
+        fs::create_dir_all(&project_a).unwrap();
+        fs::create_dir_all(&project_b).unwrap();
+
+        let source = write_source_skill(temp.path(), "dup-skill");
+        for (idx, root) in [&project_a, &project_b].iter().enumerate() {
+            let project = (idx as i64 + 1, "p".to_string(), root.display().to_string(), 1);
+            SkillService::install_dir_to_project(
+                &db,
+                &project,
+                &source,
+                "dup-skill",
+                test_project_meta("dup-skill", &[]),
+            )
+            .expect("install to project");
+        }
+
+        // 两个项目各有一份原文件，互不覆盖
+        let ns_dirs: Vec<PathBuf> = fs::read_dir(library.join("projects"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .collect();
+        assert_eq!(ns_dirs.len(), 2, "两个项目应有两个命名空间目录");
+        for ns in &ns_dirs {
+            assert!(ns.join("dup-skill/SKILL.md").is_file());
+        }
+    }
+
+    #[test]
+    fn install_dir_to_project_rolls_back_when_tool_deploy_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("library");
+        fs::create_dir_all(&library).unwrap();
+        let db = memory_db_with_library(&library);
+        let project_root = temp.path().join("proj");
+        fs::create_dir_all(&project_root).unwrap();
+        let project = (1i64, "proj".to_string(), project_root.display().to_string(), 1);
+
+        // tool-a 正常；tool-b 的项目内目录落在一个普通文件之下，create_dir_all 必失败
+        let tool_a =
+            test_tool_with_subdir("tool-a", &temp.path().join("global-a"), ".claude/skills");
+        let blocker = temp.path().join("not-a-dir");
+        fs::write(&blocker, "x").unwrap();
+        let tool_b = test_tool_with_subdir(
+            "tool-b",
+            &temp.path().join("global-b"),
+            &blocker.join("skills").display().to_string(),
+        );
+        db.insert_tool_adapter(&tool_a, 0).unwrap();
+        db.insert_tool_adapter(&tool_b, 1).unwrap();
+
+        let source = write_source_skill(temp.path(), "my-skill");
+        SkillService::install_dir_to_project(
+            &db,
+            &project,
+            &source,
+            "my-skill",
+            test_project_meta("my-skill", &["tool-a", "tool-b"]),
+        )
+        .expect_err("部署失败必须整体报错");
+
+        // 整体回滚：库内原文件与已部署条目都被清理，DB 无记录
+        assert!(
+            find_in_projects_ns(&library, "my-skill").is_none(),
+            "库内原文件应被清理"
+        );
+        assert!(
+            !project_root.join(".claude/skills/my-skill").exists(),
+            "已部署条目应被回滚"
+        );
+        assert!(db.get_all_skills().unwrap().is_empty(), "DB 不应留下记录");
+    }
+
+    #[test]
+    fn uninstall_project_skill_keeps_foreign_files_in_legacy_locations() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("library");
+        fs::create_dir_all(&library).unwrap();
+        let db = memory_db_with_library(&library);
+        let project_root = temp.path().join("proj");
+        fs::create_dir_all(&project_root).unwrap();
+        let project = (1i64, "proj".to_string(), project_root.display().to_string(), 1);
+
+        let tool_a =
+            test_tool_with_subdir("tool-a", &temp.path().join("global-a"), ".claude/skills");
+        db.insert_tool_adapter(&tool_a, 0).unwrap();
+
+        let source = write_source_skill(temp.path(), "my-skill");
+        let record = SkillService::install_dir_to_project(
+            &db,
+            &project,
+            &source,
+            "my-skill",
+            test_project_meta("my-skill", &["tool-a"]),
+        )
+        .expect("install");
+
+        // 用户在遗留共享位置 <proj>/skills/my-skill 放了自己的普通文件
+        let legacy_dir = project_root.join("skills");
+        fs::create_dir_all(&legacy_dir).unwrap();
+        fs::write(legacy_dir.join("my-skill"), "user data").unwrap();
+
+        SkillService::uninstall(&db, &record.id).expect("uninstall");
+
+        // 库内原文件与工具分发已删；外来文件保留
+        assert!(find_in_projects_ns(&library, "my-skill").is_none());
+        assert!(!project_root.join(".claude/skills/my-skill").exists());
+        assert_eq!(
+            fs::read_to_string(legacy_dir.join("my-skill")).unwrap(),
+            "user data",
+            "外来文件必须保留"
+        );
+        assert!(db.get_skill(&record.id).unwrap().is_none(), "DB 行已删");
+    }
+
+    #[test]
+    fn toggle_tool_project_scope_deploys_and_removes_single_tool() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("library");
+        fs::create_dir_all(&library).unwrap();
+        let db = memory_db_with_library(&library);
+        let project_root = temp.path().join("proj");
+        fs::create_dir_all(&project_root).unwrap();
+        let project = (1i64, "proj".to_string(), project_root.display().to_string(), 1);
+
+        let tool_a =
+            test_tool_with_subdir("tool-a", &temp.path().join("global-a"), ".claude/skills");
+        let tool_b = test_tool_with_subdir("tool-b", &temp.path().join("global-b"), ".codex/skills");
+        db.insert_tool_adapter(&tool_a, 0).unwrap();
+        db.insert_tool_adapter(&tool_b, 1).unwrap();
+
+        let source = write_source_skill(temp.path(), "my-skill");
+        let record = SkillService::install_dir_to_project(
+            &db,
+            &project,
+            &source,
+            "my-skill",
+            test_project_meta("my-skill", &["tool-a"]),
+        )
+        .expect("install");
+        assert!(!project_root.join(".codex/skills/my-skill").exists());
+
+        // 开启 tool-b：只影响 tool-b 的项目内目录
+        SkillService::toggle_tool(&db, &record.id, "tool-b", true).expect("toggle on");
+        assert!(
+            project_root
+                .join(".codex/skills/my-skill")
+                .join("SKILL.md")
+                .is_file()
+        );
+        assert!(
+            project_root
+                .join(".claude/skills/my-skill")
+                .join("SKILL.md")
+                .is_file()
+        );
+
+        // 关闭 tool-a：只移除 tool-a 的分发
+        SkillService::toggle_tool(&db, &record.id, "tool-a", false).expect("toggle off");
+        assert!(!project_root.join(".claude/skills/my-skill").exists());
+        assert!(
+            project_root
+                .join(".codex/skills/my-skill")
+                .join("SKILL.md")
+                .is_file()
+        );
+
+        let updated = db.get_skill(&record.id).unwrap().expect("record");
+        assert_eq!(updated.enabled_tools, vec!["tool-b".to_string()]);
+        // 原文件仍在中央库
+        assert!(find_in_projects_ns(&library, "my-skill").is_some());
+    }
+
+    #[test]
+    fn migrate_project_storage_layout_moves_original_and_rebuilds() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("library");
+        fs::create_dir_all(&library).unwrap();
+        let db = memory_db_with_library(&library);
+        let project_root = temp.path().join("proj");
+        fs::create_dir_all(&project_root).unwrap();
+        let project_key = project_root.display().to_string();
+
+        // 旧布局：原文件直接在 <proj>/.claude/skills/old-skill
+        let legacy = project_root.join(".claude/skills/old-skill");
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(legacy.join("SKILL.md"), "---\nname: old-skill\n---\n").unwrap();
+        let record = test_skill_record(
+            "owner/repo:old",
+            "old-skill",
+            SKILL_SCOPE_PROJECT,
+            Some(&project_key),
+        );
+        assert!(record.enabled_tools.is_empty());
+        db.save_skill(&record).unwrap();
+
+        let migrated = SkillService::migrate_project_storage_layout(&db).expect("migrate");
+        assert_eq!(migrated, 1, "应迁移 1 条");
+
+        // 新位置有原文件
+        let ns = library
+            .join("projects")
+            .join(SkillService::project_storage_namespace(&project_key));
+        assert!(
+            ns.join("old-skill/SKILL.md").is_file(),
+            "原文件应入中央库命名空间"
+        );
+
+        // 旧位置按部署方式重建（symlink 或 copy 均可）
+        assert!(legacy.join("SKILL.md").is_file(), "旧位置应重建为链接/副本");
+
+        // enabled_tools 为空时补 claude-code
+        let updated = db.get_skill(&record.id).unwrap().expect("record");
+        assert_eq!(updated.enabled_tools, vec!["claude-code".to_string()]);
+
+        // 幂等：再次执行不重复迁移
+        assert_eq!(
+            SkillService::migrate_project_storage_layout(&db).unwrap(),
+            0
+        );
     }
 }

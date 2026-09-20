@@ -70,6 +70,7 @@ async fn full_skill_lifecycle() {
         description: String::new(),
         default_path: tool_root.display().to_string(),
         current_path: tool_root.display().to_string(),
+        project_subdir: String::new(),
         is_builtin: false,
         is_enabled: true,
         installed_skills_count: 0,
@@ -146,8 +147,8 @@ fn build_test_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
     writer.finish().unwrap().into_inner()
 }
 
-/// ZIP 安装到项目作用域：skills 表 scope/project_id/project_path 正确，
-/// .claude/skills 实体 + skills/ 链接落盘；卸载后项目目录无残留
+/// ZIP 安装到项目作用域：原技能入中央库 projects 命名空间，按工具项目内目录分发，
+/// skills 表 scope/project_id/project_path 正确；卸载后无残留
 #[tokio::test]
 #[serial]
 async fn zip_install_to_project_scope_and_uninstall() {
@@ -165,6 +166,24 @@ async fn zip_install_to_project_scope_and_uninstall() {
         .add_skill_project("proj", &project_key)
         .expect("add project");
 
+    // 配一个项目内技能目录为 .claude/skills 的工具（模拟 Claude Code）
+    let tool = skilldock_lib::types::ToolAdapter {
+        id: "proj-tool".to_string(),
+        name: "Project Tool".to_string(),
+        vendor: "Custom".to_string(),
+        description: String::new(),
+        default_path: home.path().join("global-skills").display().to_string(),
+        current_path: home.path().join("global-skills").display().to_string(),
+        project_subdir: ".claude/skills".to_string(),
+        is_builtin: false,
+        is_enabled: true,
+        installed_skills_count: 0,
+        detected: true,
+        version: None,
+        color: "#4F46E5".to_string(),
+    };
+    db.insert_tool_adapter(&tool, 100).expect("insert tool");
+
     // 造 ZIP：cool-skill/SKILL.md + 辅助文件
     let zip_bytes = build_test_zip(&[
         (
@@ -176,11 +195,11 @@ async fn zip_install_to_project_scope_and_uninstall() {
     let zip_path = home.path().join("cool.zip");
     fs::write(&zip_path, zip_bytes).unwrap();
 
-    // ---- 安装到项目作用域 ----
+    // ---- 安装到项目作用域（选中 proj-tool） ----
     let records = SkillService::install_from_zip(
         &db,
         &zip_path,
-        vec![],
+        vec!["proj-tool".to_string()],
         None,
         Some(SKILL_SCOPE_PROJECT),
         Some(&project_id.to_string()),
@@ -192,15 +211,31 @@ async fn zip_install_to_project_scope_and_uninstall() {
     assert_eq!(record.project_id, Some(project_id.to_string()));
     assert_eq!(record.project_path.as_deref(), Some(project_key.as_str()));
     assert_eq!(record.directory, "cool-skill");
+    assert_eq!(record.enabled_tools, vec!["proj-tool".to_string()]);
 
-    // 落盘：.claude/skills 实体 + skills/ 链接（symlink 或 copy 均可）
-    let stored = proj.join(".claude").join("skills").join("cool-skill");
-    assert!(stored.join("SKILL.md").is_file(), "项目技能实体已落盘");
+    // 原技能入中央库 projects 命名空间
+    let library = SkillService::get_library_dir(&db).expect("library dir");
+    let projects_ns = library.join("projects");
+    let stored = fs::read_dir(&projects_ns)
+        .expect("projects namespace exists")
+        .flatten()
+        .map(|e| e.path().join("cool-skill"))
+        .find(|p| p.join("SKILL.md").is_file())
+        .expect("中央库 projects 命名空间中存在原技能");
     assert!(stored.join("helper.txt").is_file());
-    let linked = proj.join("skills").join("cool-skill");
+
+    // 按工具项目内目录分发（symlink 或 copy 均可）
+    let deployed = proj.join(".claude").join("skills").join("cool-skill");
     assert!(
-        linked.exists() || SkillService::is_symlink(&linked),
-        "项目 skills/ 链接已建立"
+        deployed.exists() || SkillService::is_symlink(&deployed),
+        "已分发到工具项目内目录"
+    );
+
+    // 新模型不再创建写死的 <project>/skills 链接
+    let legacy_linked = proj.join("skills").join("cool-skill");
+    assert!(
+        !legacy_linked.exists() && !SkillService::is_symlink(&legacy_linked),
+        "新模型不创建 skills/ 链接"
     );
 
     // DB 行 scope/project_path 正确
@@ -214,10 +249,10 @@ async fn zip_install_to_project_scope_and_uninstall() {
     // ---- 卸载后项目目录无残留 ----
     SkillService::uninstall(&db, &record.id).expect("uninstall");
     assert!(db.get_skill(&record.id).unwrap().is_none(), "DB 行已删");
-    assert!(!stored.exists(), ".claude/skills 实体已删");
+    assert!(!stored.exists(), "中央库原文件已删");
     assert!(
-        !linked.exists() && !SkillService::is_symlink(&linked),
-        "skills/ 链接已删"
+        !deployed.exists() && !SkillService::is_symlink(&deployed),
+        "工具项目内分发已删"
     );
 
     std::env::remove_var("SKILLDOCK_TEST_HOME");

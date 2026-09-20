@@ -17,6 +17,8 @@ export interface ToolAdapter {
   description: string;
   defaultPath: string;
   currentPath: string;
+  /** 项目内技能目录（相对项目根，如 '.claude/skills'）；空字符串 = 不参与项目级分发 */
+  projectSubdir: string;
   isBuiltin: boolean;
   isEnabled: boolean; // whether this tool adapter is active in the app
   installedSkillsCount: number;
@@ -52,6 +54,7 @@ export interface Skill {
   /** 中央库内的目录名（skills.sh 来源匹配坐标之一） */
   directory: string;
   description: string;
+  descriptionStatus: 'pending' | 'ready' | 'failed';
   tags: string[];
   scope: ScopeType;
   projectId?: string; // if scope === 'project'
@@ -93,6 +96,39 @@ export interface AppSettings {
   confirmOnUninstall: boolean;
 }
 
+/** LLM 连接配置；API Key 不会返回给前端。 */
+export interface LlmConfig {
+  providerName: string;
+  baseUrl: string;
+  model: string;
+  apiKeyConfigured: boolean;
+}
+
+export interface LlmConfigInput {
+  providerName: string;
+  baseUrl: string;
+  model: string;
+  /** 仅用于本次 IPC 写入，读取配置时永远为空。 */
+  apiKey?: string;
+  clearApiKey: boolean;
+}
+
+export interface LlmConnectionTest {
+  model: string;
+  message: string;
+}
+
+export interface DescriptionProcessingFailure {
+  skillId: string;
+  reason: string;
+}
+
+export interface DescriptionProcessingResult {
+  processed: number;
+  succeeded: number;
+  failures: DescriptionProcessingFailure[];
+}
+
 // ========== 后端契约类型（Tauri commands serde JSON，camelCase） ==========
 
 /** 首屏一次性取全的应用状态（get_app_state） */
@@ -101,6 +137,7 @@ export interface AppState {
   tools: ToolAdapter[];
   projects: ProjectScope[];
   settings: AppSettings;
+  llmConfig: LlmConfig;
   repos: SkillRepo[];
   /** 新手指引是否已完成/跳过（false 时首次启动自动弹出引导） */
   onboardingCompleted: boolean;

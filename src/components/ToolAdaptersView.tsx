@@ -4,9 +4,12 @@ import {
   Plus, 
   CheckCircle2, 
   Trash2, 
-  FolderOpen
+  FolderOpen,
+  Check,
+  X,
+  Pencil
 } from 'lucide-react';
-import { ToolAdapter, AddToastFn } from '../types';
+import { ToolAdapter, ToolId, AddToastFn } from '../types';
 import { ToolBrandIcon } from './icons/BrandIcons';
 import {
   useAddToolAdapter,
@@ -33,6 +36,9 @@ export const ToolAdaptersView: React.FC<ToolAdaptersViewProps> = ({
   const [customDesc, setCustomDesc] = useState('');
   const [customPath, setCustomPath] = useState('');
   const [isValidating, setIsValidating] = useState(false);
+  // 项目内技能目录的行内编辑（tool id + 草稿）
+  const [subdirEditing, setSubdirEditing] = useState<ToolId | null>(null);
+  const [subdirDraft, setSubdirDraft] = useState('');
   // 待确认移除的工具（点击「移除工具」后先弹确认框）
   const [toolPendingDelete, setToolPendingDelete] = useState<ToolAdapter | null>(null);
 
@@ -84,6 +90,30 @@ export const ToolAdaptersView: React.FC<ToolAdaptersViewProps> = ({
       {
         onSuccess: () => addToast('success', '已更新工具技能目录路径', selected),
         onError: (err) => addToast('error', '更新工具路径失败', errorToString(err)),
+      },
+    );
+  };
+
+  /** 保存项目内技能目录（相对项目根；空 = 不参与项目级分发） */
+  const handleSaveSubdir = (tool: ToolAdapter) => {
+    updateToolMutation.mutate(
+      {
+        id: tool.id,
+        name: tool.name,
+        skillsDir: tool.currentPath,
+        projectSubdir: subdirDraft.trim(),
+      },
+      {
+        onSuccess: () => {
+          addToast(
+            'success',
+            subdirDraft.trim()
+              ? `已更新「${tool.name}」项目内技能目录`
+              : `已关闭「${tool.name}」的项目级分发`,
+          );
+          setSubdirEditing(null);
+        },
+        onError: (err) => addToast('error', '更新项目内技能目录失败', errorToString(err)),
       },
     );
   };
@@ -252,6 +282,69 @@ export const ToolAdaptersView: React.FC<ToolAdaptersViewProps> = ({
                   {!tool.detected && (
                     <div className="text-[10px] text-amber-700 mt-1">该目录当前不可访问，请检查路径或重新选择。</div>
                   )}
+                </div>
+
+                {/* 项目内技能目录（项目级安装时按此目录分发到各工具） */}
+                <div>
+                  <span className="text-slate-400 text-[11px] font-semibold">项目内技能目录:</span>
+                  {subdirEditing === tool.id ? (
+                    <div className="flex items-center gap-2 mt-1">
+                      <input
+                        value={subdirDraft}
+                        onChange={(e) => setSubdirDraft(e.target.value)}
+                        placeholder=".claude/skills"
+                        className="font-mono text-[11px] px-2.5 py-1.5 rounded-lg flex-1 border border-slate-200/80 focus:outline-hidden focus:border-indigo-400 bg-white"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleSaveSubdir(tool)}
+                        disabled={isBusy}
+                        className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-lg border border-slate-200/80 hover:border-emerald-200 transition-colors shrink-0 cursor-pointer disabled:opacity-50"
+                        title="保存"
+                        aria-label="保存项目内技能目录"
+                      >
+                        <Check className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSubdirEditing(null)}
+                        className="p-1.5 text-slate-500 hover:bg-slate-100 rounded-lg border border-slate-200/80 transition-colors shrink-0 cursor-pointer"
+                        title="取消"
+                        aria-label="取消编辑"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2 mt-1">
+                      <code
+                        className={`font-mono text-[11px] px-2.5 py-1.5 rounded-lg flex-1 truncate border ${
+                          tool.projectSubdir
+                            ? 'bg-slate-100/90 text-slate-800 border-slate-200/60'
+                            : 'bg-slate-50 text-slate-400 border-slate-200/60'
+                        }`}
+                        title={tool.projectSubdir || '未配置：该工具不参与项目级分发'}
+                      >
+                        {tool.projectSubdir || '未配置（不参与项目级分发）'}
+                      </code>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSubdirEditing(tool.id);
+                          setSubdirDraft(tool.projectSubdir);
+                        }}
+                        disabled={isBusy}
+                        className="p-1.5 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 active:bg-indigo-100 rounded-lg border border-slate-200/80 hover:border-indigo-200 transition-colors shrink-0 shadow-2xs cursor-pointer disabled:opacity-50"
+                        title="配置项目内技能目录"
+                        aria-label="配置项目内技能目录"
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  )}
+                  <div className="text-[10px] text-slate-400 mt-1">
+                    相对项目根的路径（如 .claude/skills）。安装到项目的技能会按此目录分发到各工具；留空则不参与项目级分发。
+                  </div>
                 </div>
               </div>
             </div>

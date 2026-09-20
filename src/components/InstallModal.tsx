@@ -88,11 +88,22 @@ export const InstallModal: React.FC<InstallModalProps> = ({
     if (isInstalling) return;
     if (scope === 'project' && !projectId) return;
     setStep('installing');
+    // 只提交当前作用域下实际可用的工具（项目作用域需配了「项目内技能目录」）
+    const availableToolIds = new Set(
+      (scope === 'project'
+        ? tools.filter((t) => t.isEnabled && t.projectSubdir)
+        : tools.filter((t) => t.isEnabled)
+      ).map((t) => t.id),
+    );
     onConfirmInstall({
       item,
       scope,
       projectId: scope === 'project' ? projectId : undefined,
-      selectedTools,
+      selectedTools: Object.fromEntries(
+        Object.entries(selectedTools).filter(
+          ([id, on]) => on && availableToolIds.has(id as ToolId),
+        ),
+      ),
       deployMethod,
     });
   };
@@ -256,46 +267,59 @@ export const InstallModal: React.FC<InstallModalProps> = ({
                 <label className="font-bold text-slate-800 block text-xs">
                   2. 选择启用的 AI 工具
                 </label>
-                {scope === 'project' ? (
-                  // 项目作用域下后端不做工具部署（仅记录偏好），此处仅作说明
-                  <div className="p-3 rounded-2xl border border-dashed border-slate-300 bg-slate-50/70 text-[11px] text-slate-500 leading-relaxed">
-                    项目技能将直接通过项目内 .claude/skills 与 skills 目录链接生效，无需选择工具。
-                  </div>
-                ) : (
-                <div className="grid grid-cols-2 gap-2.5">
-                  {tools.filter((t) => t.isEnabled).length === 0 ? (
-                    <div className="col-span-full py-3 text-center text-xs text-slate-400 bg-slate-50 rounded-xl border border-dashed border-slate-200">
-                      暂无启用的 AI 工具，可安装后在「AI 工具」页启用并分发
-                    </div>
-                  ) : (
-                    tools.filter((t) => t.isEnabled).map((tool) => {
-                    const isChecked = !!selectedTools[tool.id];
-                    return (
-                      <div
-                        key={tool.id}
-                        onClick={() => toggleTool(tool.id)}
-                        className={`p-3 rounded-2xl border cursor-pointer flex items-center justify-between transition-all ${
-                          isChecked
-                            ? 'bg-emerald-50/80 border-emerald-300 text-emerald-950 font-semibold shadow-2xs'
-                            : 'bg-slate-50/70 border-slate-200 text-slate-600 hover:bg-slate-100/60'
-                        }`}
-                      >
-                        <div className="flex items-center gap-2.5">
-                          <ToolBrandIcon toolId={tool.id} size={18} />
-                          <span className="text-xs">{tool.name}</span>
-                        </div>
-                        <div
-                          className={`w-4 h-4 rounded-full flex items-center justify-center text-white text-[10px] ${
-                            isChecked ? 'bg-emerald-600 border border-emerald-600' : 'border border-slate-300 bg-white'
-                          }`}
-                        >
-                          {isChecked && <Check className="w-2.5 h-2.5 stroke-[3]" />}
-                        </div>
+                {(() => {
+                  // 项目作用域只列出配了「项目内技能目录」的工具（见 AI 工具页）
+                  const availableTools =
+                    scope === 'project'
+                      ? tools.filter((t) => t.isEnabled && t.projectSubdir)
+                      : tools.filter((t) => t.isEnabled);
+                  if (availableTools.length === 0) {
+                    return scope === 'project' ? (
+                      <div className="p-3 rounded-2xl border border-dashed border-slate-300 bg-slate-50/70 text-[11px] text-slate-500 leading-relaxed">
+                        还没有工具配置「项目内技能目录」。安装后原技能会存入中央库，之后可随时在技能详情里分发；
+                        如需安装时直接分发到项目内的工具目录，请先到「AI 工具」页为对应工具填写项目内技能目录（如 .claude/skills）。
+                      </div>
+                    ) : (
+                      <div className="col-span-full py-3 text-center text-xs text-slate-400 bg-slate-50 rounded-xl border border-dashed border-slate-200">
+                        暂无启用的 AI 工具，可安装后在「AI 工具」页启用并分发
                       </div>
                     );
-                    })
-                  )}
-                </div>
+                  }
+                  return (
+                    <div className="grid grid-cols-2 gap-2.5">
+                      {availableTools.map((tool) => {
+                        const isChecked = !!selectedTools[tool.id];
+                        return (
+                          <div
+                            key={tool.id}
+                            onClick={() => toggleTool(tool.id)}
+                            className={`p-3 rounded-2xl border cursor-pointer flex items-center justify-between transition-all ${
+                              isChecked
+                                ? 'bg-emerald-50/80 border-emerald-300 text-emerald-950 font-semibold shadow-2xs'
+                                : 'bg-slate-50/70 border-slate-200 text-slate-600 hover:bg-slate-100/60'
+                            }`}
+                          >
+                            <div className="flex items-center gap-2.5">
+                              <ToolBrandIcon toolId={tool.id} size={18} />
+                              <span className="text-xs">{tool.name}</span>
+                            </div>
+                            <div
+                              className={`w-4 h-4 rounded-full flex items-center justify-center text-white text-[10px] ${
+                                isChecked ? 'bg-emerald-600 border border-emerald-600' : 'border border-slate-300 bg-white'
+                              }`}
+                            >
+                              {isChecked && <Check className="w-2.5 h-2.5 stroke-[3]" />}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+                {scope === 'project' && (
+                  <div className="text-[10px] text-slate-400 leading-relaxed">
+                    原技能将存入中央库，并按上方选择分发到项目内各工具的技能目录（方式随「分发方式」设置）。
+                  </div>
                 )}
               </div>
 

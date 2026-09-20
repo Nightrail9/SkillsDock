@@ -52,7 +52,7 @@ pub(crate) fn strip_tool_in_tx(
     Ok(changed)
 }
 
-const SKILL_COLUMNS: &str = "id, name, display_name, description, directory, tags, scope,
+const SKILL_COLUMNS: &str = "id, name, display_name, description, display_description, description_status, directory, tags, scope,
      project_id, project_path, source_type, source_repo, source_branch, source_subpath,
      source_author, source_registry_id, source_url, source_github_detected,
      current_commit, latest_commit, has_update, content_hash, enabled_tools,
@@ -64,29 +64,31 @@ fn row_to_skill(row: &rusqlite::Row) -> rusqlite::Result<SkillRecord> {
         name: row.get(1)?,
         display_name: row.get(2)?,
         description: row.get(3)?,
-        directory: row.get(4)?,
-        tags: parse_json_string_list(&row.get::<_, String>(5).unwrap_or_default()),
-        scope: row.get(6)?,
-        project_id: row.get(7)?,
-        project_path: row.get(8)?,
-        source_type: row.get(9)?,
-        source_repo: row.get(10)?,
-        source_branch: row.get(11)?,
-        source_subpath: row.get(12)?,
-        source_author: row.get(13)?,
-        source_registry_id: row.get(14)?,
-        source_url: row.get(15)?,
-        source_github_detected: row.get::<_, i64>(16)? != 0,
-        current_commit: row.get(17)?,
-        latest_commit: row.get(18)?,
-        has_update: row.get::<_, i64>(19)? != 0,
-        content_hash: row.get(20)?,
-        enabled_tools: parse_json_string_list(&row.get::<_, String>(21).unwrap_or_default()),
-        deploy_method: row.get(22)?,
-        installed_at: row.get(23)?,
-        updated_at: row.get(24)?,
-        author: row.get(25)?,
-        license: row.get(26)?,
+        display_description: row.get(4)?,
+        description_status: row.get(5)?,
+        directory: row.get(6)?,
+        tags: parse_json_string_list(&row.get::<_, String>(7).unwrap_or_default()),
+        scope: row.get(8)?,
+        project_id: row.get(9)?,
+        project_path: row.get(10)?,
+        source_type: row.get(11)?,
+        source_repo: row.get(12)?,
+        source_branch: row.get(13)?,
+        source_subpath: row.get(14)?,
+        source_author: row.get(15)?,
+        source_registry_id: row.get(16)?,
+        source_url: row.get(17)?,
+        source_github_detected: row.get::<_, i64>(18)? != 0,
+        current_commit: row.get(19)?,
+        latest_commit: row.get(20)?,
+        has_update: row.get::<_, i64>(21)? != 0,
+        content_hash: row.get(22)?,
+        enabled_tools: parse_json_string_list(&row.get::<_, String>(23).unwrap_or_default()),
+        deploy_method: row.get(24)?,
+        installed_at: row.get(25)?,
+        updated_at: row.get(26)?,
+        author: row.get(27)?,
+        license: row.get(28)?,
     })
 }
 
@@ -131,18 +133,20 @@ impl Database {
         let conn = lock_conn!(self.conn);
         conn.execute(
             "INSERT OR REPLACE INTO skills (
-                id, name, display_name, description, directory, tags, scope,
+                id, name, display_name, description, display_description, description_status, directory, tags, scope,
                 project_id, project_path, source_type, source_repo, source_branch, source_subpath,
                 source_author, source_registry_id, source_url, source_github_detected,
                 current_commit, latest_commit, has_update, content_hash, enabled_tools,
                 deploy_method, installed_at, updated_at, author, license
              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-                       ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)",
+                       ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29)",
             params![
                 skill.id,
                 skill.name,
                 skill.display_name,
                 skill.description,
+                skill.display_description,
+                skill.description_status,
                 skill.directory,
                 to_json_string(&skill.tags)?,
                 skill.scope,
@@ -178,13 +182,15 @@ impl Database {
         let affected = conn
             .execute(
                 "UPDATE skills SET name = ?1, display_name = ?2, description = ?3,
-                    source_branch = ?4, current_commit = ?5, latest_commit = ?6, has_update = ?7,
-                    content_hash = ?8, updated_at = ?9, source_url = ?10
-                 WHERE id = ?11",
+                    display_description = ?4, description_status = ?5, source_branch = ?6,
+                    current_commit = ?7, latest_commit = ?8, has_update = ?9, content_hash = ?10,
+                    updated_at = ?11, source_url = ?12 WHERE id = ?13",
                 params![
                     skill.name,
                     skill.display_name,
                     skill.description,
+                    skill.display_description,
+                    skill.description_status,
                     skill.source_branch,
                     skill.current_commit,
                     skill.latest_commit,
@@ -194,6 +200,23 @@ impl Database {
                     skill.source_url,
                     skill.id,
                 ],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(affected > 0)
+    }
+
+    /// 仅提交通过校验的用户可见描述，原始 description 永远保留。
+    pub fn update_skill_display_description(
+        &self,
+        id: &str,
+        display_description: Option<&str>,
+        status: &str,
+    ) -> Result<bool, AppError> {
+        let conn = lock_conn!(self.conn);
+        let affected = conn
+            .execute(
+                "UPDATE skills SET display_description = ?1, description_status = ?2 WHERE id = ?3",
+                params![display_description, status, id],
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
         Ok(affected > 0)
@@ -291,6 +314,8 @@ mod tests {
             name: directory.to_string(),
             display_name: directory.to_string(),
             description: Some("desc".to_string()),
+            display_description: None,
+            description_status: "pending".to_string(),
             directory: directory.to_string(),
             tags: vec![],
             scope: SKILL_SCOPE_GLOBAL.to_string(),

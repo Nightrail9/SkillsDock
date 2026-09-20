@@ -2,6 +2,7 @@
 
 pub mod git_detect;
 pub mod github;
+pub mod llm_service;
 pub mod registry;
 pub mod share;
 pub mod skill_service;

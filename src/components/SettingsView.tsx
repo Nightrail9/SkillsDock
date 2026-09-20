@@ -9,11 +9,16 @@ import {
   CheckCircle2,
   AlertCircle,
   RefreshCw,
-  FolderOpen
+  FolderOpen,
+  Bot,
+  KeyRound,
+  PlugZap,
+  WandSparkles
 } from 'lucide-react';
-import { AppSettings, ToolAdapter, AddToastFn } from '../types';
+import { AppSettings, ToolAdapter, AddToastFn, LlmConfigInput } from '../types';
 import { useMigrateLibrary } from '../hooks/useSettings';
-import { useAppState } from '../hooks/useAppState';
+import { useAppState, useInvalidateAppState } from '../hooks/useAppState';
+import { settingsApi } from '../lib/api';
 import { collapseHomePath } from '../lib/utils/pathDisplay';
 import { errorToString } from '../lib/errors/skillErrorParser';
 
@@ -34,13 +39,101 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [formData, setFormData] = useState<AppSettings>({ ...settings });
   const [migrationError, setMigrationError] = useState<string | null>(null);
   const [savedStatus, setSavedStatus] = useState(false);
+  const [llmForm, setLlmForm] = useState<Omit<LlmConfigInput, 'apiKey' | 'clearApiKey'>>({
+    providerName: '',
+    baseUrl: '',
+    model: '',
+  });
+  const [apiKey, setApiKey] = useState('');
+  const [llmBusy, setLlmBusy] = useState<'save' | 'test' | 'process' | 'clear' | null>(null);
+  const [llmMessage, setLlmMessage] = useState<string | null>(null);
   const migrateMutation = useMigrateLibrary();
-  const homeDir = useAppState().data?.homeDir;
+  const appState = useAppState().data;
+  const invalidateAppState = useInvalidateAppState();
+  const homeDir = appState?.homeDir;
+  const llmConfig = appState?.llmConfig;
 
   // 后端设置刷新后同步表单（例如迁移完成后 libraryPath 更新）
   useEffect(() => {
     setFormData((prev) => ({ ...prev, ...settings }));
   }, [settings]);
+
+  useEffect(() => {
+    if (!llmConfig) return;
+    setLlmForm({
+      providerName: llmConfig.providerName,
+      baseUrl: llmConfig.baseUrl,
+      model: llmConfig.model,
+    });
+  }, [llmConfig]);
+
+  const llmInput = (clearApiKey = false): LlmConfigInput => ({
+    ...llmForm,
+    apiKey: apiKey.trim() || undefined,
+    clearApiKey,
+  });
+
+  const saveLlm = async () => {
+    setLlmBusy('save');
+    setLlmMessage(null);
+    try {
+      await settingsApi.saveLlmConfig(llmInput());
+      setApiKey('');
+      setLlmMessage('模型配置已保存；API Key 仅保存于系统凭据库。');
+      await invalidateAppState();
+    } catch (err) {
+      setLlmMessage(errorToString(err));
+    } finally {
+      setLlmBusy(null);
+    }
+  };
+
+  const testLlm = async () => {
+    setLlmBusy('test');
+    setLlmMessage(null);
+    try {
+      const result = await settingsApi.testLlmConnection(llmInput());
+      setLlmMessage(`${result.message}：${result.model}`);
+    } catch (err) {
+      setLlmMessage(`连接失败：${errorToString(err)}`);
+    } finally {
+      setLlmBusy(null);
+    }
+  };
+
+  const clearLlmKey = async () => {
+    setLlmBusy('clear');
+    setLlmMessage(null);
+    try {
+      await settingsApi.saveLlmConfig(llmInput(true));
+      setApiKey('');
+      setLlmMessage('API Key 已从系统凭据库清除。');
+      await invalidateAppState();
+    } catch (err) {
+      setLlmMessage(errorToString(err));
+    } finally {
+      setLlmBusy(null);
+    }
+  };
+
+  const processDescriptions = async () => {
+    setLlmBusy('process');
+    setLlmMessage(null);
+    try {
+      const result = await settingsApi.processAllSkillDescriptions();
+      const failed = result.failures.length;
+      setLlmMessage(
+        failed === 0
+          ? `已生成 ${result.succeeded}/${result.processed} 个中文简介。`
+          : `已生成 ${result.succeeded}/${result.processed} 个中文简介；${failed} 个失败，可再次处理重试。`,
+      );
+      await invalidateAppState();
+    } catch (err) {
+      setLlmMessage(`处理失败：${errorToString(err)}`);
+    } finally {
+      setLlmBusy(null);
+    }
+  };
 
   /** 保存并即时生效 */
   const save = (next: AppSettings) => {
@@ -309,7 +402,44 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           )}
         </div>
 
-        {/* Section 4: 关于与数据主权 */}
+        {/* Section 4: LLM 描述处理 */}
+        <div className="bg-white p-6 rounded-3xl border border-slate-200/90 shadow-sm space-y-4">
+          <div className="flex items-center gap-2">
+            <Bot className="w-4 h-4 text-indigo-600" />
+            <h2 className="text-sm font-bold text-slate-900">LLM 技能描述处理</h2>
+          </div>
+          <p className="text-xs text-slate-500 leading-relaxed">
+            使用 OpenAI Chat Completions 兼容接口，将已安装技能的英文描述翻译、中文描述压缩为 25–40 个汉字的中文简介。
+          </p>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <label className="space-y-1.5">
+              <span className="text-xs font-semibold text-slate-700">提供商名称</span>
+              <input value={llmForm.providerName} onChange={(e) => setLlmForm({ ...llmForm, providerName: e.target.value })} placeholder="DeepSeek / OpenAI / 本地模型" className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs focus:bg-white focus:ring-2 focus:ring-indigo-500/20" />
+            </label>
+            <label className="space-y-1.5">
+              <span className="text-xs font-semibold text-slate-700">模型名称</span>
+              <input value={llmForm.model} onChange={(e) => setLlmForm({ ...llmForm, model: e.target.value })} placeholder="deepseek-chat" className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-mono focus:bg-white focus:ring-2 focus:ring-indigo-500/20" />
+            </label>
+          </div>
+          <label className="block space-y-1.5">
+            <span className="text-xs font-semibold text-slate-700">API Base URL</span>
+            <input value={llmForm.baseUrl} onChange={(e) => setLlmForm({ ...llmForm, baseUrl: e.target.value })} placeholder="https://api.example.com/v1" className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-mono focus:bg-white focus:ring-2 focus:ring-indigo-500/20" />
+          </label>
+          <label className="block space-y-1.5">
+            <span className="text-xs font-semibold text-slate-700 flex items-center gap-1.5"><KeyRound className="w-3.5 h-3.5" />API Key {llmConfig?.apiKeyConfigured ? '（已保存；留空则不变）' : '（未保存）'}</span>
+            <input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="仅写入系统凭据库，不会再次显示" autoComplete="new-password" className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-mono focus:bg-white focus:ring-2 focus:ring-indigo-500/20" />
+          </label>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" onClick={saveLlm} disabled={llmBusy !== null} className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white text-xs font-bold">{llmBusy === 'save' ? '保存中...' : '保存模型配置'}</button>
+            <button type="button" onClick={testLlm} disabled={llmBusy !== null} className="px-3.5 py-2 rounded-xl border border-slate-300 hover:bg-slate-50 disabled:opacity-60 text-slate-700 text-xs font-bold inline-flex items-center gap-1.5"><PlugZap className="w-3.5 h-3.5" />{llmBusy === 'test' ? '测试中...' : '测试连接'}</button>
+            {llmConfig?.apiKeyConfigured && <button type="button" onClick={clearLlmKey} disabled={llmBusy !== null} className="px-3.5 py-2 rounded-xl border border-rose-200 hover:bg-rose-50 disabled:opacity-60 text-rose-700 text-xs font-bold">清除 API Key</button>}
+            <button type="button" onClick={processDescriptions} disabled={llmBusy !== null || !llmConfig?.apiKeyConfigured} className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 disabled:opacity-60 text-white text-xs font-bold inline-flex items-center gap-1.5"><WandSparkles className="w-3.5 h-3.5" />{llmBusy === 'process' ? '正在处理全部技能...' : '处理全部已安装技能'}</button>
+          </div>
+          {llmMessage && <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 whitespace-pre-wrap">{llmMessage}</div>}
+        </div>
+
+        {/* Section 5: 关于与数据主权 */}
         <div className="bg-white p-6 rounded-3xl border border-slate-200/90 shadow-sm space-y-4">
           <div className="flex items-center justify-between">
             <div>

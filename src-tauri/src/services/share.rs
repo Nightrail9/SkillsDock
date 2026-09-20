@@ -121,6 +121,8 @@ mod tests {
             name: directory.to_string(),
             display_name: directory.to_string(),
             description: Some("desc".to_string()),
+            display_description: None,
+            description_status: "pending".to_string(),
             directory: directory.to_string(),
             tags: vec!["cli".to_string()],
             scope: SKILL_SCOPE_GLOBAL.to_string(),

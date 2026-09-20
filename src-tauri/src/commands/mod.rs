@@ -10,10 +10,12 @@ use tauri::State;
 use crate::config;
 use crate::services::share::SharePayload;
 use crate::services::skill_service::{self, SkillService};
-use crate::services::{registry, share};
+use crate::services::{llm_service::LlmService, registry, share};
 use crate::types::{
-    AppSettings, AppStateSnapshot, ImportSkillSelection, InstallSkillInput, MigrationResult, ProjectPathStatus, ProjectScope, Skill, SkillRepo, SkillUpdateInfo,
-    SkillsShSearchResult, ToolAdapter, ToolAdapterInput, ToolPathValidation, UnmanagedSkill,
+    AppSettings, AppStateSnapshot, DescriptionProcessingResult, ImportSkillSelection, InstallSkillInput,
+    LlmConfig, LlmConfigInput, LlmConnectionTest, MigrationResult, ProjectPathStatus, ProjectScope,
+    Skill, SkillRepo, SkillUpdateInfo, SkillsShSearchResult, ToolAdapter, ToolAdapterInput,
+    ToolPathValidation, UnmanagedSkill,
 };
 use crate::AppState;
 
@@ -33,6 +35,7 @@ pub fn get_app_state(state: State<'_, AppState>) -> CmdResult<AppStateSnapshot> 
         tools: SkillService::api_tools(db).map_err(|e| e.to_string())?,
         projects: SkillService::api_projects(db).map_err(|e| e.to_string())?,
         settings: SkillService::get_settings(db).map_err(|e| e.to_string())?,
+        llm_config: LlmService::get_config(db).map_err(|e| e.to_string())?,
         repos: db.get_skill_repos().map_err(|e| e.to_string())?,
         onboarding_completed: db
             .get_setting("onboarding_completed")
@@ -119,6 +122,12 @@ pub async fn install_skill_unified(
     )
     .await
     .map_err(|e| e.to_string())?;
+    LlmService::process_skill_if_configured(&state.db, &record.id).await;
+    let record = state
+        .db
+        .get_skill(&record.id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "技能在简介处理期间被移除".to_string())?;
     let tools = state.db.list_tool_adapters().map_err(|e| e.to_string())?;
     let projects = state.db.list_skill_projects().map_err(|e| e.to_string())?;
     Ok(SkillService::record_to_skill(
@@ -192,6 +201,12 @@ pub async fn update_skill(state: State<'_, AppState>, id: String) -> CmdResult<S
     let record = SkillService::update_skill(&state.db, &id)
         .await
         .map_err(|e| e.to_string())?;
+    LlmService::process_skill_if_configured(&state.db, &record.id).await;
+    let record = state
+        .db
+        .get_skill(&record.id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "技能在简介处理期间被移除".to_string())?;
     let tools = state.db.list_tool_adapters().map_err(|e| e.to_string())?;
     let projects = state.db.list_skill_projects().map_err(|e| e.to_string())?;
     Ok(SkillService::record_to_skill(
@@ -266,6 +281,23 @@ fn probe_writable(dir: &std::path::Path) -> bool {
     }
 }
 
+/// 归一化"项目内技能目录"：trim、去首尾斜杠、反斜杠转正斜杠；
+/// 拒绝绝对路径与 `..` 段（会被拼到项目根下，必须是安全的相对路径）。空值合法（不参与项目分发）。
+fn normalize_project_subdir(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim().replace('\\', "/");
+    let trimmed = trimmed.trim_matches('/').trim();
+    if trimmed.is_empty() {
+        return Ok(String::new());
+    }
+    if trimmed.starts_with("~") || trimmed.contains(':') {
+        return Err("项目内技能目录必须是相对路径（如 .claude/skills）".to_string());
+    }
+    if trimmed.split('/').any(|seg| seg.is_empty() || seg == "." || seg == "..") {
+        return Err("项目内技能目录包含非法的路径段".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
 /// 由名称生成工具 id（slugify + custom- 前缀防撞）
 fn slugify_tool_id(name: &str) -> String {
     let slug: String = name
@@ -315,6 +347,7 @@ pub fn add_tool_adapter(
         description: input.description.clone().unwrap_or_default(),
         default_path: input.path.clone(),
         current_path: input.path.clone(),
+        project_subdir: normalize_project_subdir(input.project_subdir.as_deref().unwrap_or(""))?,
         is_builtin: false,
         is_enabled: input.is_enabled.unwrap_or(true),
         installed_skills_count: 0,
@@ -366,6 +399,10 @@ pub fn update_tool_adapter(
             .unwrap_or_else(|| existing.description.clone()),
         default_path: existing.default_path.clone(),
         current_path: input.path.clone(),
+        project_subdir: match input.project_subdir.as_deref() {
+            Some(raw) => normalize_project_subdir(raw)?,
+            None => existing.project_subdir.clone(),
+        },
         is_builtin: existing.is_builtin,
         is_enabled: input.is_enabled.unwrap_or(existing.is_enabled),
         installed_skills_count: 0,
@@ -531,6 +568,35 @@ pub fn update_settings(
 }
 
 #[tauri::command]
+pub fn get_llm_config(state: State<'_, AppState>) -> CmdResult<LlmConfig> {
+    LlmService::get_config(&state.db).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn save_llm_config(state: State<'_, AppState>, input: LlmConfigInput) -> CmdResult<LlmConfig> {
+    LlmService::save_config(&state.db, input).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn test_llm_connection(
+    state: State<'_, AppState>,
+    input: LlmConfigInput,
+) -> CmdResult<LlmConnectionTest> {
+    LlmService::test_connection(&state.db, input)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn process_all_skill_descriptions(
+    state: State<'_, AppState>,
+) -> CmdResult<DescriptionProcessingResult> {
+    LlmService::process_all(&state.db)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn redeploy_project_links(state: State<'_, AppState>, ids: Vec<String>) -> CmdResult<usize> {
     SkillService::redeploy_project_links(&state.db, &ids).map_err(|e| e.to_string())
 }
@@ -553,6 +619,13 @@ pub async fn import_skills_from_apps(
     let records = SkillService::import_from_apps(&state.db, selections)
         .await
         .map_err(|e| e.to_string())?;
+    for record in &records {
+        LlmService::process_skill_if_configured(&state.db, &record.id).await;
+    }
+    let records: Vec<_> = records
+        .iter()
+        .filter_map(|record| state.db.get_skill(&record.id).ok().flatten())
+        .collect();
     let tools = state.db.list_tool_adapters().map_err(|e| e.to_string())?;
     let projects = state.db.list_skill_projects().map_err(|e| e.to_string())?;
     Ok(records

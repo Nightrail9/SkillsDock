@@ -5,8 +5,12 @@ import type {
   AppState,
   DiscoverySkillItem,
   ImportSkillSelection,
+  LlmConfig,
+  LlmConfigInput,
+  LlmConnectionTest,
   InstallRequest,
   MigrateLibraryResult,
+  DescriptionProcessingResult,
   ProjectPathStatus,
   ProjectScope,
   ScopeType,
@@ -104,6 +108,8 @@ export interface AddToolAdapterRequest {
   vendor: string;
   description: string;
   skillsDir: string;
+  /** 项目内技能目录（相对项目根，如 '.claude/skills'）；空 = 不参与项目级分发 */
+  projectSubdir?: string;
   color?: string;
 }
 
@@ -112,11 +118,13 @@ export interface UpdateToolAdapterRequest {
   name?: string;
   description?: string;
   skillsDir?: string;
+  /** 项目内技能目录（相对项目根）；传空字符串表示不参与项目级分发 */
+  projectSubdir?: string;
   color?: string;
 }
 
 export const toolsApi = {
-  /** 后端签名为单参数 input: {name, vendor?, description?, path, color?, isEnabled?} */
+  /** 后端签名为单参数 input: {name, vendor?, description?, path, projectSubdir?, color?, isEnabled?} */
   addToolAdapter(req: AddToolAdapterRequest): Promise<ToolAdapter> {
     return invokeCommand('add_tool_adapter', {
       input: {
@@ -124,6 +132,7 @@ export const toolsApi = {
         vendor: req.vendor,
         description: req.description,
         path: req.skillsDir,
+        projectSubdir: req.projectSubdir ?? '',
         color: req.color,
       },
     });
@@ -137,6 +146,7 @@ export const toolsApi = {
         name: req.name,
         description: req.description,
         path: req.skillsDir,
+        projectSubdir: req.projectSubdir,
         color: req.color,
       },
     });
@@ -205,6 +215,22 @@ export const settingsApi = {
   /** 迁移中央技能库至新目录 */
   migrateLibrary(target: string): Promise<MigrateLibraryResult> {
     return invokeCommand('migrate_library', { target });
+  },
+
+  getLlmConfig(): Promise<LlmConfig> {
+    return invokeCommand('get_llm_config');
+  },
+
+  saveLlmConfig(input: LlmConfigInput): Promise<LlmConfig> {
+    return invokeCommand('save_llm_config', { input });
+  },
+
+  testLlmConnection(input: LlmConfigInput): Promise<LlmConnectionTest> {
+    return invokeCommand('test_llm_connection', { input });
+  },
+
+  processAllSkillDescriptions(): Promise<DescriptionProcessingResult> {
+    return invokeCommand('process_all_skill_descriptions');
   },
 };
 

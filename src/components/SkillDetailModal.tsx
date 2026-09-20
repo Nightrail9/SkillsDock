@@ -64,7 +64,6 @@ export const SkillDetailModal: React.FC<SkillDetailModalProps> = ({
   const [tagInput, setTagInput] = useState('');
   const [isAddingTag, setIsAddingTag] = useState(false);
   const enabledTools = tools.filter((t) => t.isEnabled);
-  // 项目技能经 <project>/.claude/skills 与 <project>/skills 链接生效，不参与工具分发
   const isProject = skill?.scope === 'project';
 
   // 打开详情时拉取真实 documentation / files（列表接口中这两个字段可为空）
@@ -123,6 +122,15 @@ export const SkillDetailModal: React.FC<SkillDetailModalProps> = ({
                 <span className="inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-0.5 rounded-lg bg-blue-50 text-blue-700 border border-blue-200">
                   <FolderGit2 className="w-3 h-3" />
                   项目: {skill.projectName}
+                </span>
+              )}
+              {skill.descriptionStatus !== 'ready' && (
+                <span className={`inline-flex items-center text-xs font-semibold px-2.5 py-0.5 rounded-lg border ${
+                  skill.descriptionStatus === 'failed'
+                    ? 'bg-rose-50 text-rose-700 border-rose-200'
+                    : 'bg-slate-100 text-slate-600 border-slate-200'
+                }`}>
+                  {skill.descriptionStatus === 'failed' ? '简介生成失败，可在设置重试' : '中文简介等待生成'}
                 </span>
               )}
             </div>
@@ -217,7 +225,7 @@ export const SkillDetailModal: React.FC<SkillDetailModalProps> = ({
               </span>
               <span className="text-[11px] text-slate-400">
                 {isProject
-                  ? '项目技能经项目内 .claude/skills 链接生效，不参与工具分发'
+                  ? '点击即可在项目内该工具的技能目录中建立或移除分发'
                   : '点击即可建立或移除符号链接'}
               </span>
             </div>
@@ -230,32 +238,6 @@ export const SkillDetailModal: React.FC<SkillDetailModalProps> = ({
               ) : (
                 enabledTools.map((tool) => {
                   const isDeployed = !!skill.deployedTools[tool.id];
-                  // 项目技能不参与工具分发，徽标仅作展示
-                  if (isProject) {
-                    return (
-                      <div
-                        key={tool.id}
-                        className={`p-3 rounded-2xl border text-left flex items-center justify-between cursor-default ${
-                          isDeployed
-                            ? 'bg-emerald-50/80 border-emerald-300 text-emerald-950 shadow-2xs font-semibold'
-                            : 'bg-slate-50 border-slate-200 text-slate-500'
-                        }`}
-                        title={`${tool.name}: 项目技能经项目内链接生效`}
-                      >
-                        <div className="flex items-center gap-2">
-                          <ToolBrandIcon toolId={tool.id} size={18} />
-                          <span className="text-xs">{tool.name}</span>
-                        </div>
-                        <div
-                          className={`w-4 h-4 rounded-full flex items-center justify-center text-[10px] ${
-                            isDeployed ? 'bg-emerald-600 text-white' : 'border border-slate-300'
-                          }`}
-                        >
-                          {isDeployed && <Check className="w-2.5 h-2.5 stroke-[3]" />}
-                        </div>
-                      </div>
-                    );
-                  }
                   return (
                     <button
                       key={tool.id}
@@ -265,6 +247,13 @@ export const SkillDetailModal: React.FC<SkillDetailModalProps> = ({
                           ? 'bg-emerald-50/80 border-emerald-300 text-emerald-950 shadow-2xs font-semibold'
                           : 'bg-slate-50 border-slate-200 text-slate-500 hover:border-slate-300 hover:bg-white'
                       }`}
+                      title={
+                        isProject
+                          ? isDeployed
+                            ? `${tool.name}: 已分发到项目内技能目录 (点击停止分发)`
+                            : `${tool.name}: 未分发 (点击分发到项目内技能目录)`
+                          : undefined
+                      }
                     >
                       <div className="flex items-center gap-2">
                         <ToolBrandIcon toolId={tool.id} size={18} />

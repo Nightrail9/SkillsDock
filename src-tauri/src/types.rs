@@ -66,6 +66,8 @@ pub struct Skill {
     /// 中央库内的目录名（skills.sh 来源匹配坐标之一）
     pub directory: String,
     pub description: String,
+    /// 'pending' | 'ready' | 'failed'；用户可见描述由后端按此状态脱敏输出。
+    pub description_status: String,
     pub tags: Vec<String>,
     /// 'global' | 'project'
     pub scope: String,
@@ -109,6 +111,8 @@ pub struct ToolAdapter {
     pub description: String,
     pub default_path: String,
     pub current_path: String,
+    /// 项目内技能目录（相对项目根，如 `.claude/skills`）；空 = 不参与项目级分发
+    pub project_subdir: String,
     pub is_builtin: bool,
     /// 该适配器是否在应用内启用
     pub is_enabled: bool,
@@ -252,6 +256,10 @@ pub struct SkillRecord {
     pub name: String,
     pub display_name: String,
     pub description: Option<String>,
+    /// 经 LLM 翻译/压缩后、通过长度校验的用户可见描述。
+    pub display_description: Option<String>,
+    /// 'pending' | 'ready' | 'failed'
+    pub description_status: String,
     /// 安装目录名（单段，中央库或项目内的子目录名）
     pub directory: String,
     pub tags: Vec<String>,
@@ -406,11 +414,69 @@ pub struct AppStateSnapshot {
     pub tools: Vec<ToolAdapter>,
     pub projects: Vec<ProjectScope>,
     pub settings: AppSettings,
+    /// LLM 配置不包含 API Key，仅暴露其是否已安全保存。
+    pub llm_config: LlmConfig,
     pub repos: Vec<SkillRepo>,
     /// 新手指引是否已完成/跳过（PRD 3.10：首次启动展示引导）
     pub onboarding_completed: bool,
     /// 用户主目录（前端用于把绝对路径折叠为 ~/... 展示）
     pub home_dir: String,
+}
+
+/// 面向前端的 LLM 连接配置（密钥仅保存在系统凭据库）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LlmConfig {
+    pub provider_name: String,
+    pub base_url: String,
+    pub model: String,
+    pub api_key_configured: bool,
+}
+
+impl Default for LlmConfig {
+    fn default() -> Self {
+        Self {
+            provider_name: String::new(),
+            base_url: String::new(),
+            model: String::new(),
+            api_key_configured: false,
+        }
+    }
+}
+
+/// 写入 LLM 连接配置。api_key 不会序列化回前端或写入 SQLite。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LlmConfigInput {
+    pub provider_name: String,
+    pub base_url: String,
+    pub model: String,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default)]
+    pub clear_api_key: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LlmConnectionTest {
+    pub model: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DescriptionProcessingFailure {
+    pub skill_id: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DescriptionProcessingResult {
+    pub processed: usize,
+    pub succeeded: usize,
+    pub failures: Vec<DescriptionProcessingFailure>,
 }
 
 /// 工具适配器新增/更新入参
@@ -426,6 +492,9 @@ pub struct ToolAdapterInput {
     pub description: Option<String>,
     /// 技能目录路径（支持 ~ 开头）
     pub path: String,
+    /// 项目内技能目录（相对项目根，如 `.claude/skills`）；空 = 不参与项目级分发
+    #[serde(default)]
+    pub project_subdir: Option<String>,
     #[serde(default)]
     pub color: Option<String>,
     #[serde(default)]

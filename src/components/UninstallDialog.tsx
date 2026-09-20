@@ -57,7 +57,7 @@ export const UninstallDialog: React.FC<UninstallDialogProps> = ({
                 : `确认彻底卸载技能「${singleSkill.displayName}」？`}
             </h3>
             <p className="text-xs text-slate-500 mt-1 leading-relaxed">
-              此操作将从本机的技能仓库以及所有已建立软链接的 AI 工具目录中彻底清除。
+              此操作将从本机的技能仓库以及所有已建立分发的 AI 工具目录（含各项目内的技能目录）中彻底清除。
             </p>
           </div>
         </div>

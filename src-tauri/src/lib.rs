@@ -66,11 +66,26 @@ pub fn run() {
             commands::add_skill_repo,
             commands::get_settings,
             commands::update_settings,
+            commands::get_llm_config,
+            commands::save_llm_config,
+            commands::test_llm_connection,
+            commands::process_all_skill_descriptions,
             commands::redeploy_project_links,
             commands::migrate_library,
             commands::scan_unmanaged_skills,
             commands::import_skills_from_apps,
         ])
+        .setup(|app| {
+            // 存量项目级技能存储布局迁移（原文件入中央库命名空间）。
+            // 放在 setup 中：日志插件已就绪，迁移日志可落盘；best-effort 不阻塞启动
+            let state = tauri::Manager::state::<AppState>(app.handle());
+            if let Err(e) = services::skill_service::SkillService::migrate_project_storage_layout(
+                &state.db,
+            ) {
+                log::error!("项目级技能存储布局迁移失败: {e}");
+            }
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running skilldock application");
 }
