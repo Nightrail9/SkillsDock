@@ -36,6 +36,8 @@ import { BatchBar } from './components/BatchBar';
 import { UninstallDialog } from './components/UninstallDialog';
 import { TagEditModal } from './components/TagEditModal';
 import { APP_STATE_KEY, useAppState, useCompleteOnboarding } from './hooks/useAppState';
+import { useToast } from './hooks/useToast';
+import { ToastContainer } from './components/Toast';
 import {
   useToggleSkillTool,
   useBulkToggleSkillTool,
@@ -60,8 +62,8 @@ export default function App() {
   const projects = useMemo(() => appState?.projects ?? [], [appState]);
   const appSettings = appState?.settings ?? null;
 
-  // ===== Toast 通知（按需求停用右上角弹窗，addToast 保留为无操作以维持组件接口） =====
-  const addToast: AddToastFn = useCallback((_type, _title, _description) => {}, []);
+  // ===== Toast 通知（右上角弹窗，操作结果与失败反馈的用户可见出口） =====
+  const { toasts, addToast, dismissToast } = useToast();
 
   // ===== Mutations =====
   const toggleToolMutation = useToggleSkillTool();
@@ -843,6 +845,9 @@ export default function App() {
         onSaveSettings={handleSaveSettings}
         onClose={handleCloseOnboarding}
       />
+
+      {/* Toast 通知容器（最顶层） */}
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>
   );
 }

@@ -179,3 +179,12 @@
   border-radius: 9999px;
   animation: indeterminate-slide 1.1s ease-in-out infinite;
 }
+
+/* Toast 通知入场动画 */
+@keyframes toast-slide-in {
+  from { opacity: 0; transform: translateX(16px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+.toast-enter {
+  animation: toast-slide-in 0.18s ease-out;
+}

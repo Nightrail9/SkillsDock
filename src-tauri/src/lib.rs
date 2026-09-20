@@ -16,9 +16,27 @@ pub struct AppState {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // panic 不再静默退出：写日志 + stderr（windows_subsystem 下 stderr 可能被丢弃，日志兜底）
+    std::panic::set_hook(Box::new(|info| {
+        let msg = format!("应用发生 panic: {info}");
+        log::error!("{msg}");
+        eprintln!("{msg}");
+    }));
+
     let db = db::Database::init().unwrap_or_else(|e| panic!("初始化数据库失败: {e}"));
 
     tauri::Builder::default()
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .targets([
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
+                        file_name: None,
+                    }),
+                ])
+                .level(log::LevelFilter::Info)
+                .build(),
+        )
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(AppState { db: Arc::new(db) })
