@@ -196,18 +196,13 @@ impl Database {
         Ok(changed)
     }
 
-    /// 更新内容哈希
-    pub fn update_skill_hash(
-        &self,
-        id: &str,
-        content_hash: &str,
-        updated_at: i64,
-    ) -> Result<bool, AppError> {
+    /// 更新内容哈希（不触碰 updated_at）
+    pub fn update_skill_hash(&self, id: &str, content_hash: &str) -> Result<bool, AppError> {
         let conn = lock_conn!(self.conn);
         let affected = conn
             .execute(
-                "UPDATE skills SET content_hash = ?1, updated_at = ?2 WHERE id = ?3",
-                params![content_hash, updated_at, id],
+                "UPDATE skills SET content_hash = ?1 WHERE id = ?2",
+                params![content_hash, id],
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
         Ok(affected > 0)

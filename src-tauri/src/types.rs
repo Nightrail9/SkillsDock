@@ -342,6 +342,8 @@ pub struct SkillUpdateInfo {
 pub struct MigrationResult {
     pub migrated_count: usize,
     pub skipped_count: usize,
+    /// 因目标已存在同名条目而跳过的目录名
+    pub skipped: Vec<String>,
     pub errors: Vec<String>,
 }
 

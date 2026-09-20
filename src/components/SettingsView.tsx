@@ -80,11 +80,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             'success',
             '技能仓库迁移完成',
             `已迁移 ${result.migratedCount} 个技能${
-              result.skippedCount > 0 ? `，跳过 ${result.skippedCount} 个` : ''
+              result.skippedCount > 0
+                ? `，跳过 ${result.skippedCount} 个（目标已存在同名目录：${result.skipped.join('、')}）`
+                : ''
             }，新目录：${target}`,
           );
         } else {
-          const detail = `成功 ${result.migratedCount} 项、跳过 ${result.skippedCount} 项、失败 ${result.errors.length} 项：\n${result.errors.join('\n')}`;
+          const skippedDetail =
+            result.skippedCount > 0 ? `（${result.skipped.join('、')}）` : '';
+          const detail = `成功 ${result.migratedCount} 项、跳过 ${result.skippedCount} 项${skippedDetail}、失败 ${result.errors.length} 项：\n${result.errors.join('\n')}`;
           setMigrationError(detail);
           addToast('warning', '技能仓库迁移部分失败', detail);
         }

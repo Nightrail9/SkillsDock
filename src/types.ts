@@ -213,6 +213,8 @@ export interface ToolPathValidation {
 export interface MigrateLibraryResult {
   migratedCount: number;
   skippedCount: number;
+  /** 因目标已存在同名条目而跳过的目录名 */
+  skipped: string[];
   errors: string[];
 }
 

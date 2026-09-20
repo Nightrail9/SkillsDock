@@ -51,6 +51,12 @@ fn state_write_guard() -> std::sync::RwLockWriteGuard<'static, ()> {
         .unwrap_or_else(|e| e.into_inner())
 }
 
+#[cfg(test)]
+std::thread_local! {
+    /// 测试用：注入第 N 次 fs_rename 调用失败（Some(0) = 下一次调用即失败）
+    static RENAME_FAIL_AFTER: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
 /// 分发方式
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyncMethod {
@@ -700,7 +706,8 @@ impl SkillService {
         Ok(())
     }
 
-    /// 临时目录 + rename 的原子替换（同文件系统内）
+    /// 原子替换目标目录：复制到 tmp → dest 改名 backup → tmp 改名 dest → 删除 backup。
+    /// 任一步失败都回滚到 dest 原状；回滚失败返回错误并指明备份位置供手动恢复。
     pub fn replace_dest_with_copy(source: &Path, dest: &Path, directory: &str) -> Result<()> {
         Self::validate_sync_source_dir(source, directory)?;
 
@@ -714,32 +721,89 @@ impl SkillService {
             .unwrap_or_default()
             .as_nanos();
         let tmp_name = Self::sanitize_tmp_segment(directory);
-        let tmp = parent.join(format!(".{tmp_name}.tmp-{}-{nonce}", std::process::id()));
+        let staging = format!(".{tmp_name}.{}-{nonce}", std::process::id());
+        let tmp = parent.join(format!("{staging}.tmp"));
+        let backup = parent.join(format!("{staging}.bak"));
 
-        if tmp.exists() || Self::is_symlink(&tmp) {
-            Self::remove_path(&tmp)?;
+        for path in [&tmp, &backup] {
+            if path.exists() || Self::is_symlink(path) {
+                Self::remove_path(path)?;
+            }
         }
 
-        let copy_result = Self::copy_dir_recursive(source, &tmp);
-        if let Err(err) = copy_result {
-            let _ = Self::remove_path(&tmp);
+        if let Err(err) = Self::copy_dir_recursive(source, &tmp) {
+            Self::cleanup_staging(&tmp);
             return Err(err);
         }
 
-        if dest.exists() || Self::is_symlink(dest) {
-            Self::remove_path(dest)?;
+        let had_dest = dest.exists() || Self::is_symlink(dest);
+        if had_dest {
+            if let Err(err) = Self::fs_rename(dest, &backup) {
+                Self::cleanup_staging(&tmp);
+                return Err(anyhow!(
+                    "备份现有 Skill 目录失败: {} -> {}: {err}",
+                    dest.display(),
+                    backup.display()
+                ));
+            }
         }
 
-        fs::rename(&tmp, dest).with_context(|| {
-            let _ = Self::remove_path(&tmp);
-            format!(
-                "替换 Skill 目录失败: {} -> {}",
+        if let Err(err) = Self::fs_rename(&tmp, dest) {
+            Self::cleanup_staging(&tmp);
+            if had_dest {
+                if let Err(rollback_err) = fs::rename(&backup, dest) {
+                    return Err(anyhow!(
+                        "替换 Skill 目录失败: {err}；回滚备份也失败: {rollback_err}。原数据仍在 {}，请手动重命名为 {}",
+                        backup.display(),
+                        dest.display()
+                    ));
+                }
+            }
+            return Err(anyhow!(
+                "替换 Skill 目录失败: {} -> {}: {err}",
                 tmp.display(),
                 dest.display()
-            )
-        })?;
+            ));
+        }
 
+        if had_dest {
+            Self::cleanup_staging(&backup);
+        }
         Ok(())
+    }
+
+    /// 尽力清理暂存目录，失败仅告警（不影响主流程结论）
+    fn cleanup_staging(path: &Path) {
+        if path.exists() || Self::is_symlink(path) {
+            if let Err(err) = Self::remove_path(path) {
+                log::warn!("清理暂存目录失败 {}: {err}", path.display());
+            }
+        }
+    }
+
+    /// fs::rename 封装（测试可注入失败）
+    fn fs_rename(from: &Path, to: &Path) -> std::io::Result<()> {
+        #[cfg(test)]
+        {
+            let inject = RENAME_FAIL_AFTER.with(|c| match c.get() {
+                Some(0) => {
+                    c.set(None);
+                    true
+                }
+                Some(n) => {
+                    c.set(Some(n - 1));
+                    false
+                }
+                None => false,
+            });
+            if inject {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "injected rename failure (test)",
+                ));
+            }
+        }
+        fs::rename(from, to)
     }
 
     fn sanitize_tmp_segment(segment: &str) -> String {
@@ -1052,6 +1116,14 @@ impl SkillService {
             log::warn!("工具 {} 的技能目录与技能库相同，跳过部署", tool.id);
             return Ok(());
         }
+        if Self::paths_overlap(&source, &dest) {
+            return Err(anyhow!(
+                "工具 {} 的技能目录与技能库路径重叠，拒绝部署: {} <-> {}",
+                tool.id,
+                source.display(),
+                dest.display()
+            ));
+        }
 
         if record.deploy_method == "copy" {
             Self::replace_dest_with_copy(&source, &dest, &directory)?;
@@ -1080,9 +1152,21 @@ impl SkillService {
     }
 
     /// 从工具目录移除技能（容错删除 symlink 或真实目录）
-    pub fn remove_from_tool(record: &SkillRecord, tool: &ToolAdapter) -> Result<()> {
+    pub fn remove_from_tool(db: &Database, record: &SkillRecord, tool: &ToolAdapter) -> Result<()> {
         let directory = Self::require_valid_directory(&record.directory)?;
         let dest = Self::tool_root(tool).join(&directory);
+        // 工具目录与技能库同源/重叠时跳过（否则会删掉库内源目录）
+        if let Ok(source) = Self::skill_storage_dir(db, record) {
+            if Self::paths_overlap(&source, &dest) {
+                log::warn!(
+                    "工具 {} 的技能目录与技能库路径重叠，跳过移除: {} <-> {}",
+                    tool.id,
+                    source.display(),
+                    dest.display()
+                );
+                return Ok(());
+            }
+        }
         if dest.exists() || Self::is_symlink(&dest) {
             Self::remove_path(&dest)?;
         }
@@ -1258,8 +1342,8 @@ impl SkillService {
 
         let library = Self::get_library_dir(db)?;
         let dest = library.join(&install_name);
-        if dest.exists() {
-            let _ = fs::remove_dir_all(&dest);
+        if dest.exists() || Self::is_symlink(&dest) {
+            Self::remove_path(&dest)?;
         }
         Self::copy_dir_recursive(&canonical_source, &dest)?;
 
@@ -1312,8 +1396,12 @@ impl SkillService {
         // 逐工具部署：全部失败则回滚（删记录 + 删目录）
         let deployed = Self::deploy_to_tools(db, &record, &enabled_tools);
         if !enabled_tools.is_empty() && deployed.is_empty() {
-            let _ = db.delete_skill(&record.id);
-            let _ = fs::remove_dir_all(&dest);
+            if let Err(err) = db.delete_skill(&record.id) {
+                log::warn!("部署失败回滚：删除技能记录 {} 失败: {err}", record.id);
+            }
+            if let Err(err) = fs::remove_dir_all(&dest) {
+                log::warn!("部署失败回滚：删除目录 {} 失败: {err}", dest.display());
+            }
             return Err(anyhow!(format_skill_error(
                 "DEPLOY_FAILED",
                 &[("skill", &install_name)],
@@ -1630,7 +1718,9 @@ impl SkillService {
             Ok(())
         })();
         if let Err(err) = link_result {
-            let _ = fs::remove_dir_all(&dest);
+            if let Err(clean_err) = fs::remove_dir_all(&dest) {
+                log::warn!("链接失败回滚：删除目录 {} 失败: {clean_err}", dest.display());
+            }
             return Err(err);
         }
 
@@ -1671,9 +1761,16 @@ impl SkillService {
 
         if let Err(err) = db.save_skill(&record) {
             if link_created {
-                let _ = Self::remove_path(&linked_dest);
+                if let Err(clean_err) = Self::remove_path(&linked_dest) {
+                    log::warn!(
+                        "保存失败回滚：移除链接 {} 失败: {clean_err}",
+                        linked_dest.display()
+                    );
+                }
             }
-            let _ = fs::remove_dir_all(&dest);
+            if let Err(clean_err) = fs::remove_dir_all(&dest) {
+                log::warn!("保存失败回滚：删除目录 {} 失败: {clean_err}", dest.display());
+            }
             return Err(err.into());
         }
 
@@ -1867,8 +1964,8 @@ impl SkillService {
 
         let library = Self::get_library_dir(db)?;
         let dest = library.join(&install_name);
-        if dest.exists() {
-            let _ = fs::remove_dir_all(&dest);
+        if dest.exists() || Self::is_symlink(&dest) {
+            Self::remove_path(&dest)?;
         }
         Self::copy_dir_recursive(skill_dir, &dest)?;
         let content_hash = Self::compute_dir_hash(&dest).ok();
@@ -1914,8 +2011,12 @@ impl SkillService {
 
         let deployed = Self::deploy_to_tools(db, &record, &enabled_tools);
         if !enabled_tools.is_empty() && deployed.is_empty() {
-            let _ = db.delete_skill(&record.id);
-            let _ = fs::remove_dir_all(&dest);
+            if let Err(err) = db.delete_skill(&record.id) {
+                log::warn!("部署失败回滚：删除技能记录 {} 失败: {err}", record.id);
+            }
+            if let Err(err) = fs::remove_dir_all(&dest) {
+                log::warn!("部署失败回滚：删除目录 {} 失败: {err}", dest.display());
+            }
             return Err(anyhow!(format_skill_error(
                 "DEPLOY_FAILED",
                 &[("skill", &install_name)],
@@ -2178,8 +2279,12 @@ impl SkillService {
 
         let deployed = Self::deploy_to_tools(db, &record, &enabled_tools);
         if !enabled_tools.is_empty() && deployed.is_empty() {
-            let _ = db.delete_skill(&record.id);
-            let _ = fs::remove_dir_all(&dest);
+            if let Err(err) = db.delete_skill(&record.id) {
+                log::warn!("部署失败回滚：删除技能记录 {} 失败: {err}", record.id);
+            }
+            if let Err(err) = fs::remove_dir_all(&dest) {
+                log::warn!("部署失败回滚：删除目录 {} 失败: {err}", dest.display());
+            }
             return Err(anyhow!(format_skill_error(
                 "DEPLOY_FAILED",
                 &[("skill", &install_name)],
@@ -2210,7 +2315,7 @@ impl SkillService {
             Ok(_) => {
                 for tool_id in &record.enabled_tools {
                     if let Ok(Some(tool)) = db.get_tool_adapter(tool_id) {
-                        if let Err(err) = Self::remove_from_tool(&record, &tool) {
+                        if let Err(err) = Self::remove_from_tool(db, &record, &tool) {
                             log::warn!("卸载时从工具 {tool_id} 移除失败（继续）: {err}");
                         }
                     }
@@ -2317,7 +2422,7 @@ impl SkillService {
                 record.enabled_tools.push(tool_id.to_string());
             }
         } else {
-            Self::remove_from_tool(&record, &tool)?;
+            Self::remove_from_tool(db, &record, &tool)?;
             record.enabled_tools.retain(|t| t != tool_id);
         }
         db.update_skill_enabled_tools(id, &record.enabled_tools)?;
@@ -2400,7 +2505,7 @@ impl SkillService {
 
             // 扫描远端仓库中的全部技能目录
             let mut remote_dirs: Vec<(String, String)> = Vec::new();
-            let _ = Self::scan_repo_dir_recursive(temp_dir, temp_dir, name, &mut remote_dirs);
+            Self::scan_repo_dir_recursive(temp_dir, temp_dir, name, &mut remote_dirs)?;
 
             // 远端 I/O 完成后才读本地状态
             let _guard = state_read_guard();
@@ -2444,7 +2549,9 @@ impl SkillService {
                 }) {
                     Some(Some((h, freshly_computed))) => {
                         if freshly_computed {
-                            let _ = db.update_skill_hash(&skill.id, &h, 0);
+                            if let Err(e) = db.update_skill_hash(&skill.id, &h) {
+                                log::warn!("回填内容哈希失败 {}: {e}", skill.id);
+                            }
                         }
                         Some(h)
                     }
@@ -2456,11 +2563,13 @@ impl SkillService {
                 let has_update = hash_changed || commit_changed;
 
                 // 回填远端状态
-                let _ = db.update_skill_update_state(
+                if let Err(e) = db.update_skill_update_state(
                     &skill.id,
                     latest_commit.as_deref().or(skill.latest_commit.as_deref()),
                     has_update,
-                );
+                ) {
+                    log::warn!("回填更新状态失败 {}: {e}", skill.id);
+                }
 
                 if has_update {
                     updates.push(SkillUpdateInfo {
@@ -2510,7 +2619,7 @@ impl SkillService {
         let temp_dir = temp_guard.path();
 
         let mut remote_dirs: Vec<(String, String)> = Vec::new();
-        let _ = Self::scan_repo_dir_recursive(temp_dir, temp_dir, name, &mut remote_dirs);
+        Self::scan_repo_dir_recursive(temp_dir, temp_dir, name, &mut remote_dirs)?;
         let remote_match = remote_dirs
             .iter()
             .find(|(directory, _)| {
@@ -2545,10 +2654,7 @@ impl SkillService {
         Self::require_valid_directory(&current.directory)?;
 
         let dest = Self::skill_storage_dir(db, &current)?;
-        if dest.exists() {
-            fs::remove_dir_all(&dest)?;
-        }
-        Self::copy_dir_recursive(&source, &dest)?;
+        Self::replace_dest_with_copy(&source, &dest, &current.directory)?;
 
         // 项目级：刷新 <project>/skills/<dir> 链接（symlink 指向不变则不动，copy 重新替换）
         if current.is_project() {
@@ -2564,7 +2670,9 @@ impl SkillService {
             // 全局：对所有已启用工具重部署
             for tool_id in &current.enabled_tools {
                 if let Ok(Some(tool)) = db.get_tool_adapter(tool_id) {
-                    let _ = Self::remove_from_tool(&current, &tool);
+                    if let Err(err) = Self::remove_from_tool(db, &current, &tool) {
+                        log::warn!("更新后从工具 {tool_id} 移除旧部署失败（继续重部署）: {err}");
+                    }
                     if let Err(err) = Self::deploy_to_tool(db, &current, &tool) {
                         log::warn!("更新后重部署到工具 {tool_id} 失败: {err}");
                     }
@@ -2809,6 +2917,7 @@ impl SkillService {
             return Ok(MigrationResult {
                 migrated_count: 0,
                 skipped_count: 0,
+                skipped: vec![],
                 errors: vec![],
             });
         }
@@ -2824,6 +2933,7 @@ impl SkillService {
         let mut result = MigrationResult {
             migrated_count: 0,
             skipped_count: 0,
+            skipped: vec![],
             errors: vec![],
         };
         let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
@@ -2836,6 +2946,7 @@ impl SkillService {
             let dst = new_dir.join(&name);
             if dst.exists() || Self::is_symlink(&dst) {
                 result.skipped_count += 1;
+                result.skipped.push(name.to_string_lossy().into_owned());
                 continue;
             }
             let move_result: Result<()> = match fs::rename(&src, &dst) {
@@ -2859,6 +2970,7 @@ impl SkillService {
                 Err(e) => {
                     result.errors.push(format!("{}: {e}", src.display()));
                     // 整体回滚已移动的条目
+                    let mut rollback_failures: Vec<String> = Vec::new();
                     for (src, dst) in moved.iter().rev() {
                         let rollback: Result<()> = if fs::rename(dst, src).is_ok() {
                             Ok(())
@@ -2876,11 +2988,19 @@ impl SkillService {
                         };
                         if let Err(err) = rollback {
                             log::error!("迁移回滚失败 {}: {err}", dst.display());
+                            rollback_failures.push(format!("{}: {err}", dst.display()));
                         }
                     }
+                    if rollback_failures.is_empty() {
+                        return Err(anyhow!(
+                            "技能库迁移失败并已回滚: {}",
+                            result.errors.join("; ")
+                        ));
+                    }
                     return Err(anyhow!(
-                        "技能库迁移失败并已回滚: {}",
-                        result.errors.join("; ")
+                        "技能库迁移失败: {}。回滚未全部完成，请手动检查以下目录: {}",
+                        result.errors.join("; "),
+                        rollback_failures.join("; ")
                     ));
                 }
             }
@@ -2901,6 +3021,19 @@ impl SkillService {
                     }
                 }
             }
+        }
+
+        if !result.errors.is_empty() {
+            log::error!(
+                "技能库已迁移到 {}，但重部署失败: {}",
+                new_dir.display(),
+                result.errors.join("; ")
+            );
+            return Err(anyhow!(
+                "技能库文件已迁移到 {}，但以下工具的重部署失败，请在工具管理中重新启用对应技能: {}",
+                new_dir.display(),
+                result.errors.join("; ")
+            ));
         }
 
         log::info!(
@@ -3687,5 +3820,37 @@ mod tests {
         // 源缺少 SKILL.md → 拒绝且不触碰 dest
         assert!(SkillService::replace_dest_with_copy(&source, &dest, "x").is_err());
         assert!(dest.join("keep.txt").exists());
+    }
+
+    #[test]
+    fn replace_dest_with_copy_rolls_back_when_final_rename_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("SKILL.md"), "new skill").unwrap();
+        let dest = temp.path().join("dest");
+        fs::create_dir_all(&dest).unwrap();
+        fs::write(dest.join("keep.txt"), "keep").unwrap();
+
+        // 第一次 rename（dest→backup）放行，第二次（tmp→dest）注入失败
+        RENAME_FAIL_AFTER.with(|c| c.set(Some(1)));
+        let err = SkillService::replace_dest_with_copy(&source, &dest, "x").unwrap_err();
+        RENAME_FAIL_AFTER.with(|c| c.set(None));
+
+        assert!(
+            err.to_string().contains("替换 Skill 目录失败"),
+            "unexpected error: {err}"
+        );
+        // dest 回滚为原内容，未被新内容污染
+        assert_eq!(fs::read_to_string(dest.join("keep.txt")).unwrap(), "keep");
+        assert!(!dest.join("SKILL.md").exists());
+        // 无 tmp / backup 暂存残留
+        let leftovers: Vec<String> = fs::read_dir(temp.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with('.'))
+            .collect();
+        assert!(leftovers.is_empty(), "暂存目录残留: {leftovers:?}");
     }
 }
