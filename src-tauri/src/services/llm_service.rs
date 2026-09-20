@@ -371,6 +371,18 @@ impl LlmService {
             }
             records
         };
+        // 没有原始描述的技能无从处理：直接跳过，不计入失败
+        // （本地导入/分享来的技能可能本身没有 description）
+        let records: Vec<SkillRecord> = records
+            .into_iter()
+            .filter(|record| {
+                record
+                    .description
+                    .as_deref()
+                    .map(str::trim)
+                    .is_some_and(|d| !d.is_empty())
+            })
+            .collect();
         let mut result = DescriptionProcessingResult {
             processed: records.len(),
             succeeded: 0,
