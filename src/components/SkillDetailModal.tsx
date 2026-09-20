@@ -225,7 +225,7 @@ export const SkillDetailModal: React.FC<SkillDetailModalProps> = ({
               </span>
               <span className="text-[11px] text-slate-400">
                 {isProject
-                  ? '点击即可在项目内该工具的技能目录中建立或移除分发'
+                  ? '点击即可在项目内工具目录中建立或移除分发'
                   : '点击即可建立或移除符号链接'}
               </span>
             </div>
