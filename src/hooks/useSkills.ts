@@ -19,19 +19,9 @@ function autoProcessDescriptions(ids: string[], queryClient: ReturnType<typeof u
   const apiKey = readLlmApiKey();
   if (!apiKey.trim() || ids.length === 0) return;
   void settingsApi
-    .processSkillDescriptions(ids, apiKey)
+    .processSkillDescriptions(ids, apiKey, 'zh')
     .then(() => queryClient.invalidateQueries({ queryKey: APP_STATE_KEY }))
     .catch((err) => console.warn('中文简介自动生成失败:', err));
-}
-
-/** 技能详情（含真实 documentation 与 files 文件树） */
-export function useSkillDetail(id: string | undefined) {
-  return useQuery({
-    queryKey: ['skills', 'detail', id],
-    queryFn: () => skillsApi.getDetail(id as string),
-    enabled: !!id,
-    staleTime: 60 * 1000,
-  });
 }
 
 /** 切换技能在某工具上的分发状态 */

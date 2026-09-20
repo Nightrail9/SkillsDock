@@ -69,7 +69,6 @@ pub fn run() {
             commands::get_llm_config,
             commands::save_llm_config,
             commands::test_llm_connection,
-            commands::process_all_skill_descriptions,
             commands::process_skill_descriptions,
             commands::redeploy_project_links,
             commands::migrate_library,

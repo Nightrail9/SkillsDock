@@ -10,7 +10,6 @@ import {
   RotateCw,
   AlertCircle,
   RefreshCw,
-  WandSparkles,
 } from 'lucide-react';
 import {
   Skill,
@@ -26,7 +25,6 @@ import {
 import { HeaderBar } from './components/HeaderBar';
 import { Sidebar } from './components/Sidebar';
 import { SkillCard } from './components/SkillCard';
-import { SkillDetailModal } from './components/SkillDetailModal';
 import { InstallModal } from './components/InstallModal';
 import { DiscoveryView } from './components/DiscoveryView';
 import { ToolAdaptersView } from './components/ToolAdaptersView';
@@ -84,25 +82,31 @@ export default function App() {
   // ===== 启动时回填存量"本地技能"的 skills.sh 社区来源（联网精确匹配；有回填则刷新列表） =====
   const queryClient = useQueryClient();
 
-  // 生成中文简介：只为尚未生成（pending）或生成失败（failed）的技能补生成；
-  // 新安装/更新/导入的技能由各自 mutation 自动触发
+  // 为选中技能生成简介（语言由 BatchBar 二级菜单选择）；
+  // 新安装/更新/导入的技能由各自 mutation 自动生成中文简介
   const [descBusy, setDescBusy] = useState(false);
-  const pendingDescSkills = useMemo(
-    () => skills.filter((skill) => skill.descriptionStatus !== 'ready'),
-    [skills],
-  );
-  const handleGenerateDescriptions = async () => {
+  const handleGenerateDescriptions = async (language: 'zh' | 'en') => {
     const apiKey = readLlmApiKey().trim();
     if (!apiKey) {
       addToast('error', '请先在设置页填写 API Key');
       return;
     }
-    if (pendingDescSkills.length === 0) return;
+    if (selectedSkillIds.size === 0) return;
+    // 只补生成尚未生成/生成失败的；已生成的不会被覆盖
+    const targetIds = [...selectedSkillIds].filter((id) => {
+      const skill = skills.find((s) => s.id === id);
+      return skill && skill.descriptionStatus !== 'ready';
+    });
+    if (targetIds.length === 0) {
+      addToast('error', '选中的技能均已生成简介');
+      return;
+    }
     setDescBusy(true);
     try {
       await settingsApi.processSkillDescriptions(
-        pendingDescSkills.map((skill) => skill.id),
+        targetIds,
         apiKey,
+        language,
       );
       queryClient.invalidateQueries({ queryKey: APP_STATE_KEY });
     } catch (err) {
@@ -138,7 +142,6 @@ export default function App() {
   const [selectedSkillIds, setSelectedSkillIds] = useState<Set<string>>(new Set());
 
   // Modal Dialog States
-  const [detailSkillId, setDetailSkillId] = useState<string | null>(null);
   const [installItem, setInstallItem] = useState<DiscoverySkillItem | null>(null);
   const [installError, setInstallError] = useState<string | null>(null);
   const [shareTarget, setShareTarget] = useState<{ skill?: Skill; isBatch?: boolean } | null>(null);
@@ -151,7 +154,6 @@ export default function App() {
   // 更新中的技能集合（按钮 loading 态）
   const [updatingSkillIds, setUpdatingSkillIds] = useState<Set<string>>(new Set());
 
-  const detailSkill = detailSkillId ? skills.find((s) => s.id === detailSkillId) ?? null : null;
   const tagEditingSkill = tagEditingSkillId
     ? skills.find((s) => s.id === tagEditingSkillId) ?? null
     : null;
@@ -711,22 +713,6 @@ export default function App() {
                     </button>
                   )}
 
-                  {pendingDescSkills.length > 0 && (
-                    <button
-                      onClick={handleGenerateDescriptions}
-                      disabled={descBusy}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 disabled:opacity-60 text-sm font-semibold transition-colors"
-                      title="为尚未生成或生成失败的技能补生成中文简介（新安装/更新的技能会自动生成）"
-                    >
-                      <WandSparkles className={`w-4 h-4 ${descBusy ? 'animate-pulse' : ''}`} />
-                      <span>
-                        {descBusy
-                          ? '生成中...'
-                          : `生成中文简介 (${pendingDescSkills.length})`}
-                      </span>
-                    </button>
-                  )}
-
                   <span className="h-4 w-px bg-slate-200 mx-1" />
 
                   <span className="text-sm text-slate-500">
@@ -806,7 +792,6 @@ export default function App() {
                         isSelected={selectedSkillIds.has(skill.id)}
                         onToggleSelect={handleToggleSelect}
                         onToggleToolDeploy={handleToggleToolDeploy}
-                        onOpenDetail={(s) => setDetailSkillId(s.id)}
                         onUpdateSingle={handleUpdateSingle}
                         onOpenTagEdit={(s) => setTagEditingSkillId(s.id)}
                         onUninstallSingle={(s) => requestUninstall([s])}
@@ -875,33 +860,19 @@ export default function App() {
         isPending={
           bulkToggleMutation.isPending ||
           bulkUninstallMutation.isPending ||
-          bulkUpdateMutation.isPending
+          bulkUpdateMutation.isPending ||
+          descBusy
         }
         onClearSelection={handleClearSelection}
         onSelectAll={handleSelectAll}
         onBatchDeployTool={handleBatchDeployTool}
         onBatchShare={() => setShareTarget({ isBatch: true })}
         onBatchUninstall={() => requestUninstall(visibleSelectedSkills)}
+        onGenerateDescriptions={handleGenerateDescriptions}
       />
 
       {/* Modals & Dialogs */}
-      {/* 1. Skill Detail Modal */}
-      {detailSkill && (
-        <SkillDetailModal
-          skill={detailSkill}
-          tools={tools}
-          onClose={() => setDetailSkillId(null)}
-          onToggleToolDeploy={handleToggleToolDeploy}
-          onUpdate={handleUpdateSingle}
-          onShare={(s) => setShareTarget({ skill: s })}
-          onUninstall={(s) => requestUninstall([s])}
-          onAddTag={handleAddTagToSkill}
-          onRemoveTag={handleRemoveTagFromSkill}
-          isUpdating={updatingSkillIds.has(detailSkill.id)}
-        />
-      )}
-
-      {/* 2. Unified Install Modal */}
+      {/* 1. Unified Install Modal */}
       {installItem && (
         <InstallModal
           item={installItem}

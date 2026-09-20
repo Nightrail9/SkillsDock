@@ -563,25 +563,17 @@ pub async fn test_llm_connection(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-pub async fn process_all_skill_descriptions(
-    state: State<'_, AppState>,
-    api_key: String,
-) -> CmdResult<DescriptionProcessingResult> {
-    LlmService::process_skills(&state.db, &[], &api_key)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-/// 为指定技能生成中文简介（安装/更新/导入后由前端触发；
-/// API Key 由前端按调用传入，不落任何持久层）
+/// 为指定技能生成简介（安装/更新/导入后由前端触发；也可对选中技能手动生成）。
+/// API Key 由前端按调用传入，不落任何持久层；language: "zh" | "en"
 #[tauri::command]
 pub async fn process_skill_descriptions(
     state: State<'_, AppState>,
     ids: Vec<String>,
     api_key: String,
+    language: String,
 ) -> CmdResult<DescriptionProcessingResult> {
-    LlmService::process_skills(&state.db, &ids, &api_key)
+    let language = if language == "en" { "en" } else { "zh" };
+    LlmService::process_skills(&state.db, &ids, &api_key, language)
         .await
         .map_err(|e| e.to_string())
 }

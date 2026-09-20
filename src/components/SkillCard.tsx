@@ -56,7 +56,6 @@ interface SkillCardProps {
   isSelected: boolean;
   onToggleSelect: (skillId: string) => void;
   onToggleToolDeploy: (skillId: string, toolId: ToolId) => void;
-  onOpenDetail: (skill: Skill) => void;
   onUpdateSingle: (skill: Skill) => void;
   onOpenTagEdit?: (skill: Skill) => void;
   onUninstallSingle: (skill: Skill) => void;
@@ -69,7 +68,6 @@ export const SkillCard: React.FC<SkillCardProps> = ({
   isSelected,
   onToggleSelect,
   onToggleToolDeploy,
-  onOpenDetail,
   onUpdateSingle,
   onOpenTagEdit,
   onUninstallSingle,
@@ -102,11 +100,7 @@ export const SkillCard: React.FC<SkillCardProps> = ({
 
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 flex-wrap mb-1.5">
-              <h3
-                onClick={() => onOpenDetail(skill)}
-                className="text-sm font-bold text-slate-900 hover:text-indigo-600 cursor-pointer transition-colors truncate"
-                title={skill.displayName}
-              >
+              <h3 className="text-sm font-bold text-slate-900 truncate" title={skill.displayName}>
                 {skill.displayName}
               </h3>
 

@@ -41,10 +41,6 @@ export const appStateApi = {
 // ========== 技能管理 ==========
 
 export const skillsApi = {
-  /** 技能详情（填充真实 documentation 与 files 文件树） */
-  getDetail(id: string): Promise<Skill> {
-    return invokeCommand('get_skill_detail', { id });
-  },
 
   /** 切换技能在某个工具上的分发启用状态（后端返回 void） */
   toggleTool(id: string, toolId: ToolId, enabled: boolean): Promise<void> {
@@ -223,11 +219,13 @@ export const settingsApi = {
     return invokeCommand('test_llm_connection', { input });
   },
 
-  processAllSkillDescriptions(apiKey: string): Promise<DescriptionProcessingResult> {
-    return invokeCommand('process_all_skill_descriptions', { apiKey });
-  },
-  processSkillDescriptions(ids: string[], apiKey: string): Promise<DescriptionProcessingResult> {
-    return invokeCommand('process_skill_descriptions', { ids, apiKey });
+  /** 为指定技能生成简介；language: 'zh' | 'en' */
+  processSkillDescriptions(
+    ids: string[],
+    apiKey: string,
+    language: 'zh' | 'en',
+  ): Promise<DescriptionProcessingResult> {
+    return invokeCommand('process_skill_descriptions', { ids, apiKey, language });
   },
 };
 
