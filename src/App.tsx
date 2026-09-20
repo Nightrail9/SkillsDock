@@ -1,0 +1,848 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import { useState, useMemo, useEffect, useCallback } from 'react';
+import {
+  Package,
+  Search,
+  RotateCw,
+  AlertCircle,
+  RefreshCw,
+} from 'lucide-react';
+import {
+  Skill,
+  ScopeType,
+  MainNavTab,
+  ToolId,
+  DiscoverySkillItem,
+  SkillDeployMethod,
+  AddToastFn,
+  AppSettings,
+} from './types';
+import { HeaderBar } from './components/HeaderBar';
+import { Sidebar } from './components/Sidebar';
+import { SkillCard } from './components/SkillCard';
+import { SkillDetailModal } from './components/SkillDetailModal';
+import { InstallModal } from './components/InstallModal';
+import { DiscoveryView } from './components/DiscoveryView';
+import { ToolAdaptersView } from './components/ToolAdaptersView';
+import { ProjectsView } from './components/ProjectsView';
+import { SettingsView } from './components/SettingsView';
+import { ShareModal } from './components/ShareModal';
+import { OnboardingModal } from './components/OnboardingModal';
+import { BatchBar } from './components/BatchBar';
+import { UninstallDialog } from './components/UninstallDialog';
+import { TagEditModal } from './components/TagEditModal';
+import { APP_STATE_KEY, useAppState, useCompleteOnboarding } from './hooks/useAppState';
+import {
+  useToggleSkillTool,
+  useBulkToggleSkillTool,
+  useSetSkillTags,
+  useBulkUninstallSkills,
+  useCheckSkillUpdates,
+  useUpdateSkill,
+  useBulkUpdateSkills,
+  useInstallSkillUnified,
+} from './hooks/useSkills';
+import { useUpdateSettings } from './hooks/useSettings';
+import { skillsApi } from './lib/api';
+import { useQueryClient } from '@tanstack/react-query';
+import { errorToString } from './lib/errors/skillErrorParser';
+
+export default function App() {
+  // ===== 后端应用状态（首屏一次取全） =====
+  const appStateQuery = useAppState();
+  const appState = appStateQuery.data;
+  const skills: Skill[] = useMemo(() => appState?.skills ?? [], [appState]);
+  const tools = useMemo(() => appState?.tools ?? [], [appState]);
+  const projects = useMemo(() => appState?.projects ?? [], [appState]);
+  const appSettings = appState?.settings ?? null;
+
+  // ===== Toast 通知（按需求停用右上角弹窗，addToast 保留为无操作以维持组件接口） =====
+  const addToast: AddToastFn = useCallback((_type, _title, _description) => {}, []);
+
+  // ===== Mutations =====
+  const toggleToolMutation = useToggleSkillTool();
+  const bulkToggleMutation = useBulkToggleSkillTool();
+  const setTagsMutation = useSetSkillTags();
+  const bulkUninstallMutation = useBulkUninstallSkills();
+  const checkUpdatesMutation = useCheckSkillUpdates();
+  const updateSkillMutation = useUpdateSkill();
+  const bulkUpdateMutation = useBulkUpdateSkills();
+  const installUnifiedMutation = useInstallSkillUnified();
+  const updateSettingsMutation = useUpdateSettings();
+
+  // ===== 启动时回填存量"本地技能"的 skills.sh 社区来源（联网精确匹配；有回填则刷新列表） =====
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    let cancelled = false;
+    skillsApi
+      .backfillSources()
+      .then((n) => {
+        if (!cancelled && n > 0) {
+          queryClient.invalidateQueries({ queryKey: APP_STATE_KEY });
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [queryClient]);
+
+  // Top Navigation Tab (Default to 'installed')
+  const [currentTab, setCurrentTab] = useState<MainNavTab>('installed');
+
+  // Installed Page Filter States (Project Scope & Tags)
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedScope, setSelectedScope] = useState<'all' | ScopeType | string>('all');
+  const [selectedTags, setSelectedTags] = useState<string[]>([]);
+
+  // Selection for Batch Mode
+  const [selectedSkillIds, setSelectedSkillIds] = useState<Set<string>>(new Set());
+
+  // Modal Dialog States
+  const [detailSkillId, setDetailSkillId] = useState<string | null>(null);
+  const [installItem, setInstallItem] = useState<DiscoverySkillItem | null>(null);
+  const [installError, setInstallError] = useState<string | null>(null);
+  const [shareTarget, setShareTarget] = useState<{ skill?: Skill; isBatch?: boolean } | null>(null);
+  const [tagEditingSkillId, setTagEditingSkillId] = useState<string | null>(null);
+  const [skillsToUninstall, setSkillsToUninstall] = useState<Skill[]>([]);
+  const [showOnboarding, setShowOnboarding] = useState(false);
+
+  // 更新中的技能集合（按钮 loading 态）
+  const [updatingSkillIds, setUpdatingSkillIds] = useState<Set<string>>(new Set());
+
+  const detailSkill = detailSkillId ? skills.find((s) => s.id === detailSkillId) ?? null : null;
+  const tagEditingSkill = tagEditingSkillId
+    ? skills.find((s) => s.id === tagEditingSkillId) ?? null
+    : null;
+
+  // 打开新安装目标时清空上一次的错误
+  useEffect(() => {
+    setInstallError(null);
+  }, [installItem]);
+
+  // ===== 新手指引（PRD 3.10）：首次启动自动弹出，完成/跳过后持久化标记 =====
+  const completeOnboardingMutation = useCompleteOnboarding();
+  const onboardingCompleted = appState?.onboardingCompleted;
+  useEffect(() => {
+    if (onboardingCompleted === false) {
+      setShowOnboarding(true);
+    }
+  }, [onboardingCompleted]);
+
+  const handleCloseOnboarding = useCallback(() => {
+    setShowOnboarding(false);
+    // 仅在未完成时落库标记，避免重复写入与无效刷新
+    if (onboardingCompleted === false) {
+      completeOnboardingMutation.mutate(undefined, {
+        onError: (err) => console.warn('记录新手指引状态失败:', errorToString(err)),
+      });
+    }
+  }, [onboardingCompleted, completeOnboardingMutation.mutate]);
+
+  // ===== 自动更新检测：启动时仅当距上次检测已超过设定间隔才执行；运行期间按间隔到期检测 =====
+  const autoCheckUpdate = appState?.settings.autoCheckUpdate;
+  const checkIntervalDays = appState?.settings.checkIntervalDays;
+  const lastUpdateCheckAt = appState?.settings.lastUpdateCheckAt;
+  const checkUpdatesMutate = checkUpdatesMutation.mutate;
+  useEffect(() => {
+    if (!autoCheckUpdate || lastUpdateCheckAt === undefined) return;
+    const intervalMs = Math.max(checkIntervalDays ?? 1, 1) * 24 * 3600 * 1000;
+    const runIfDue = () => {
+      if (Date.now() - lastUpdateCheckAt * 1000 < intervalMs) return;
+      checkUpdatesMutate(undefined, {
+        onError: (err) => console.warn('自动检查更新失败:', errorToString(err)),
+      });
+    };
+    runIfDue();
+    const timer = setInterval(runIfDue, intervalMs);
+    return () => clearInterval(timer);
+  }, [autoCheckUpdate, checkIntervalDays, lastUpdateCheckAt, checkUpdatesMutate]);
+
+  // Extract all unique tags with count
+  const allTags = useMemo(() => {
+    const counts: Record<string, number> = {};
+    skills.forEach((s) => {
+      s.tags.forEach((t) => {
+        counts[t] = (counts[t] || 0) + 1;
+      });
+    });
+    return Object.entries(counts)
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count);
+  }, [skills]);
+
+  // Filter installed skills by Project, Tags, and Search
+  const filteredSkills = useMemo(() => {
+    return skills.filter((skill) => {
+      // 1. Project Scope Filter
+      if (selectedScope === 'global' && skill.scope !== 'global') return false;
+      if (selectedScope !== 'all' && selectedScope !== 'global' && skill.projectId !== selectedScope) return false;
+
+      // 2. Tag Level Filter
+      if (selectedTags.length > 0 && !selectedTags.some((t) => skill.tags.includes(t))) {
+        return false;
+      }
+
+      // 3. Search Filter
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase();
+        const matchesName = skill.displayName.toLowerCase().includes(q) || skill.name.toLowerCase().includes(q);
+        const matchesDesc = skill.description.toLowerCase().includes(q);
+        const matchesTags = skill.tags.some((t) => t.toLowerCase().includes(q));
+        const matchesRepo = skill.source.repo?.toLowerCase().includes(q) || false;
+        if (!matchesName && !matchesDesc && !matchesTags && !matchesRepo) return false;
+      }
+
+      return true;
+    });
+  }, [skills, selectedScope, selectedTags, searchQuery]);
+
+  const updateAvailableCount = skills.filter((s) => s.hasUpdate).length;
+
+  // ===== Handlers =====
+
+  // Toggle single tool deployment for a skill
+  const handleToggleToolDeploy = (skillId: string, toolId: ToolId) => {
+    const targetSkill = skills.find((s) => s.id === skillId);
+    const targetTool = tools.find((t) => t.id === toolId);
+    if (!targetSkill || !targetTool) return;
+
+    const willBeDeployed = !targetSkill.deployedTools[toolId];
+
+    toggleToolMutation.mutate(
+      { id: skillId, toolId, enabled: willBeDeployed },
+      {
+        onSuccess: () => {
+          if (willBeDeployed) {
+            addToast('success', `已在 ${targetTool.name} 中启用`, '已建立分发链接并即时生效');
+          } else {
+            addToast('info', `已在 ${targetTool.name} 中停用`, '已移除分发链接，技能仓库文件完好保留');
+          }
+        },
+        onError: (err) => {
+          addToast('error', '分发状态切换失败', errorToString(err));
+        },
+      },
+    );
+  };
+
+  // Toggle single selection
+  const handleToggleSelect = (skillId: string) => {
+    setSelectedSkillIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(skillId)) next.delete(skillId);
+      else next.add(skillId);
+      return next;
+    });
+  };
+
+  const isAllFilteredSelected =
+    filteredSkills.length > 0 &&
+    filteredSkills.every((s) => selectedSkillIds.has(s.id));
+
+  const handleToggleSelectAll = () => {
+    setSelectedSkillIds((prev) => {
+      const next = new Set(prev);
+      if (isAllFilteredSelected) {
+        filteredSkills.forEach((s) => next.delete(s.id));
+      } else {
+        filteredSkills.forEach((s) => next.add(s.id));
+      }
+      return next;
+    });
+  };
+
+  const handleSelectAll = () => {
+    setSelectedSkillIds(new Set(filteredSkills.map((s) => s.id)));
+  };
+
+  const handleClearSelection = () => {
+    setSelectedSkillIds(new Set());
+  };
+
+  // Batch deploy / retract（串行执行，汇总成功/失败）
+  const handleBatchDeployTool = (toolId: ToolId, enable: boolean) => {
+    const targetTool = tools.find((t) => t.id === toolId);
+    const ids = Array.from(selectedSkillIds);
+    if (ids.length === 0) return;
+
+    bulkToggleMutation.mutate(
+      { ids, toolId, enabled: enable },
+      {
+        onSuccess: (result) => {
+          if (result.failed.length === 0) {
+            addToast(
+              'success',
+              `批量${enable ? '启用' : '停用'}完成`,
+              `已在 ${result.succeeded.length} 个技能上${enable ? '启用' : '停用'} ${targetTool?.name ?? toolId}`
+            );
+          } else {
+            addToast(
+              'warning',
+              `批量${enable ? '启用' : '停用'}部分失败`,
+              `成功 ${result.succeeded.length} 项、失败 ${result.failed.length} 项：${errorToString(result.failed[0].error)}`
+            );
+          }
+        },
+      },
+    );
+  };
+
+  // Check updates（手动触发，带反馈；后端会刷新 lastUpdateCheckAt 并重置自动检测计时）
+  const handleCheckUpdates = () => {
+    checkUpdatesMutation.mutate(undefined, {
+      onSuccess: (updates) => {
+        addToast(
+          'info',
+          '检查更新完成',
+          updates.length > 0
+            ? `已成功比对远端 Git 提交，当前有 ${updates.length} 个技能有新版本。`
+            : '所有技能均已是最新版本。'
+        );
+      },
+      onError: (err) => {
+        addToast('error', '检查更新失败', errorToString(err));
+      },
+    });
+  };
+
+  // Update single skill
+  const handleUpdateSingle = (skill: Skill) => {
+    setUpdatingSkillIds((prev) => new Set(prev).add(skill.id));
+    updateSkillMutation.mutate(skill.id, {
+      onSuccess: (updated) => {
+        addToast(
+          'success',
+          `技能「${updated.displayName}」更新成功`,
+          `已更新至最新提交 ${updated.currentCommit}，并同步至所有已启用工具。`
+        );
+      },
+      onError: (err) => {
+        addToast('error', `技能「${skill.displayName}」更新失败`, errorToString(err));
+      },
+      onSettled: () => {
+        setUpdatingSkillIds((prev) => {
+          const next = new Set(prev);
+          next.delete(skill.id);
+          return next;
+        });
+      },
+    });
+  };
+
+  // 批量更新（串行），供「全部更新」与「批量更新选中」共用
+  const runBulkUpdate = (ids: string[]) => {
+    if (ids.length === 0) return;
+    bulkUpdateMutation.mutate(ids, {
+      onSuccess: (result) => {
+        if (result.failed.length === 0) {
+          addToast('success', '全部更新完成', `已将 ${result.succeeded.length} 个技能更新至最新版本并同步。`);
+        } else {
+          addToast(
+            'warning',
+            '批量更新部分失败',
+            `成功 ${result.succeeded.length} 项、失败 ${result.failed.length} 项：${errorToString(result.failed[0].error)}`
+          );
+        }
+      },
+    });
+  };
+
+  const handleUpdateAll = () => {
+    runBulkUpdate(skills.filter((s) => s.hasUpdate).map((s) => s.id));
+  };
+
+  // 发起卸载：根据设置决定是否需要二次确认
+  const requestUninstall = (targets: Skill[]) => {
+    if (targets.length === 0) return;
+    if (appSettings?.confirmOnUninstall !== false) {
+      setSkillsToUninstall(targets);
+    } else {
+      bulkUninstallMutation.mutate(
+        targets.map((s) => s.id),
+        {
+          onSuccess: (result) => {
+            handleClearSelection();
+            if (result.failed.length === 0) {
+              addToast('success', '卸载完成', `已彻底移除 ${result.succeeded.length} 个技能包。`);
+            } else {
+              addToast(
+                'warning',
+                '批量卸载部分失败',
+                `成功 ${result.succeeded.length} 项、失败 ${result.failed.length} 项：${errorToString(result.failed[0].error)}`
+              );
+            }
+          },
+        },
+      );
+    }
+  };
+
+  // Uninstall confirm（单个与批量共用，串行执行）
+  const handleConfirmUninstall = () => {
+    const targets = skillsToUninstall;
+    const ids = targets.map((s) => s.id);
+    if (ids.length === 0) return;
+
+    bulkUninstallMutation.mutate(ids, {
+      onSuccess: (result) => {
+        setSkillsToUninstall([]);
+        handleClearSelection();
+        if (result.failed.length === 0) {
+          addToast(
+            'success',
+            '卸载完成',
+            `已从技能仓库及所有工具目录中彻底移除 ${result.succeeded.length} 个技能包。`
+          );
+        } else {
+          addToast(
+            'warning',
+            '批量卸载部分失败',
+            `成功 ${result.succeeded.length} 项、失败 ${result.failed.length} 项：${errorToString(result.failed[0].error)}`
+          );
+        }
+      },
+    });
+  };
+
+  // Finish installation from modal（真实安装命令，进度由 mutation 状态驱动）
+  const handleCompleteInstall = (params: {
+    item: DiscoverySkillItem;
+    scope: ScopeType;
+    projectId?: string;
+    selectedTools: Record<ToolId, boolean>;
+    deployMethod: SkillDeployMethod;
+  }) => {
+    const toolIds = Object.entries(params.selectedTools)
+      .filter(([, enabled]) => enabled)
+      .map(([id]) => id);
+
+    setInstallError(null);
+    installUnifiedMutation.mutate(
+      {
+        skill: params.item,
+        req: {
+          scope: params.scope,
+          projectId: params.projectId,
+          toolIds,
+          deployMethod: params.deployMethod,
+        },
+      },
+      {
+        onSuccess: (installed) => {
+          setInstallItem(null);
+          setInstallError(null);
+          setCurrentTab('installed');
+          addToast(
+            'success',
+            `技能「${installed.displayName}」安装完成`,
+            '已保存至技能仓库并在选定工具中生效。'
+          );
+        },
+        onError: (err) => {
+          setInstallError(errorToString(err));
+        },
+      },
+    );
+  };
+
+  // Toggle tag selection (sidebar filter)
+  const handleToggleTag = (tag: string) => {
+    setSelectedTags((prev) =>
+      prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]
+    );
+  };
+
+  // Add tag to skill（set_skill_tags 整体替换语义）
+  const handleAddTagToSkill = (skillId: string, newTag: string) => {
+    const skill = skills.find((s) => s.id === skillId);
+    if (!skill || skill.tags.includes(newTag)) return;
+    setTagsMutation.mutate(
+      { ids: [skillId], tags: [...skill.tags, newTag] },
+      {
+        onSuccess: () => addToast('success', '标签已添加', `已为技能添加 #${newTag}`),
+        onError: (err) => addToast('error', '标签添加失败', errorToString(err)),
+      },
+    );
+  };
+
+  const handleRemoveTagFromSkill = (skillId: string, tagToRemove: string) => {
+    const skill = skills.find((s) => s.id === skillId);
+    if (!skill) return;
+    setTagsMutation.mutate(
+      { ids: [skillId], tags: skill.tags.filter((t) => t !== tagToRemove) },
+      {
+        onSuccess: () => addToast('info', '标签已移除', `已移除标签 #${tagToRemove}`),
+        onError: (err) => addToast('error', '标签移除失败', errorToString(err)),
+      },
+    );
+  };
+
+  // Save settings（设置页 / 新手引导共用）
+  const handleSaveSettings = (newSettings: AppSettings) => {
+    updateSettingsMutation.mutate(newSettings, {
+      onSuccess: () => addToast('success', '偏好设置已保存并即时生效'),
+      onError: (err) => addToast('error', '设置保存失败', errorToString(err)),
+    });
+  };
+
+  // ===== 首屏 Loading / 错误态 =====
+  if (appStateQuery.isLoading) {
+    return (
+      <div className="flex flex-col h-screen w-full bg-white items-center justify-center gap-4 select-none">
+        <div className="w-12 h-12 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center">
+          <RefreshCw className="w-6 h-6 animate-spin" />
+        </div>
+        <div className="text-sm font-semibold text-slate-700">正在加载技能坞数据...</div>
+        <div className="text-xs text-slate-400">正在读取技能仓库、工具适配器与设置</div>
+      </div>
+    );
+  }
+
+  if (appStateQuery.isError || !appState) {
+    return (
+      <div className="flex flex-col h-screen w-full bg-white items-center justify-center gap-4 select-none px-6">
+        <div className="w-12 h-12 rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center">
+          <AlertCircle className="w-6 h-6" />
+        </div>
+        <div className="text-sm font-semibold text-slate-800">应用状态加载失败</div>
+        <div className="text-xs text-slate-500 max-w-md text-center leading-relaxed">
+          {errorToString(appStateQuery.error) || '无法读取本地技能仓库数据，请确认后端服务正常运行。'}
+        </div>
+        <button
+          onClick={() => appStateQuery.refetch()}
+          className="px-5 py-2 rounded-xl text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 transition-colors shadow-xs"
+        >
+          重新加载
+        </button>
+      </div>
+    );
+  }
+
+  const settings = appState.settings;
+
+  return (
+    <div className="flex flex-col h-screen w-full bg-white text-slate-900 select-none overflow-hidden font-sans">
+      {/* 无边框窗口：标题栏与主导航合并为一行（含自绘窗口控制按钮） */}
+      <HeaderBar
+        tools={tools}
+        totalSkillsCount={skills.length}
+        updateAvailableCount={updateAvailableCount}
+        projectsCount={projects.length}
+        currentTab={currentTab}
+        onSelectTab={(tab) => {
+          setCurrentTab(tab);
+          handleClearSelection();
+        }}
+      />
+
+      {/* Main App Workspace */}
+      <div className="flex-1 flex overflow-hidden">
+        {/* TAB 1: Installed Skills Management (with Left Filter Sidebar) */}
+        {currentTab === 'installed' && (
+          <div className="flex-1 flex overflow-hidden">
+            <Sidebar
+              selectedScope={selectedScope}
+              onSelectScope={setSelectedScope}
+              projectList={projects.map((p) => ({
+                id: p.id,
+                name: p.name,
+                count: skills.filter((s) => s.projectId === p.id).length,
+              }))}
+              globalCount={skills.filter((s) => s.scope === 'global').length}
+              totalCount={skills.length}
+              allTags={allTags}
+              selectedTags={selectedTags}
+              onToggleTag={handleToggleTag}
+              onClearTags={() => setSelectedTags([])}
+              onOpenRegisterProject={() => setCurrentTab('projects')}
+            />
+
+            {/* Right Skills Main Content */}
+            <main className="flex-1 flex flex-col min-w-0 bg-[#FBFBFC] overflow-hidden">
+              {/* Action Toolbar（与左侧栏头部同高，保证底部横线对齐） */}
+              <div className="h-[61px] px-6 bg-white/95 backdrop-blur-xs border-b border-slate-200/80 flex items-center justify-between gap-4 flex-wrap">
+                <div className="flex items-center gap-3 flex-1 min-w-[280px]">
+                  <div className="relative flex-1 max-w-sm">
+                    <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+                    <input
+                      type="text"
+                      placeholder="搜索技能名称、描述、标签或仓库..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="w-full pl-9 pr-7 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-hidden focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all placeholder:text-slate-400 shadow-2xs"
+                    />
+                    {searchQuery && (
+                      <button
+                        onClick={() => setSearchQuery('')}
+                        className="absolute right-2.5 top-2.5 text-slate-400 hover:text-slate-600 text-xs w-4 h-4 rounded-full flex items-center justify-center bg-slate-200/80"
+                      >
+                        ×
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Right Actions: Check Updates + Updates + Selection Controls */}
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button
+                    onClick={handleCheckUpdates}
+                    disabled={checkUpdatesMutation.isPending}
+                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-sm font-medium transition-colors ${
+                      updateAvailableCount > 0
+                        ? 'border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100'
+                        : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50 shadow-2xs'
+                    }`}
+                    title="一键检查所有技能的远端 Git 提交与版本更新"
+                  >
+                    <RotateCw className={`w-4 h-4 ${checkUpdatesMutation.isPending ? 'animate-spin text-indigo-600' : 'text-slate-500'}`} />
+                    <span>{checkUpdatesMutation.isPending ? '检测中...' : updateAvailableCount > 0 ? `有 ${updateAvailableCount} 项待更新` : '检查更新'}</span>
+                  </button>
+
+                  {updateAvailableCount > 0 && (
+                    <button
+                      onClick={handleUpdateAll}
+                      disabled={bulkUpdateMutation.isPending}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 active:bg-amber-700 disabled:opacity-60 text-white text-sm font-semibold shadow-xs transition-colors"
+                      title="一键将所有有更新的技能更新至远程最新提交"
+                    >
+                      <RotateCw className={`w-4 h-4 ${bulkUpdateMutation.isPending ? 'animate-spin' : ''}`} />
+                      <span>全部更新 ({updateAvailableCount})</span>
+                    </button>
+                  )}
+
+                  <span className="h-4 w-px bg-slate-200 mx-1" />
+
+                  <span className="text-sm text-slate-500">
+                    显示 <strong className="text-slate-800">{filteredSkills.length}</strong> / {skills.length} 项
+                    {selectedSkillIds.size > 0 && (
+                      <span className="ml-1 text-indigo-600 font-medium">
+                        (已选 {selectedSkillIds.size})
+                      </span>
+                    )}
+                  </span>
+
+                  {selectedSkillIds.size > 0 && !isAllFilteredSelected && (
+                    <button
+                      onClick={handleClearSelection}
+                      className="text-sm text-slate-500 hover:text-slate-700 font-medium px-2 py-1 rounded-lg hover:bg-slate-100 transition-colors"
+                      title="清除所有已选项目"
+                    >
+                      清除选择
+                    </button>
+                  )}
+
+                  {filteredSkills.length > 0 && (
+                    <button
+                      onClick={handleToggleSelectAll}
+                      className={`text-sm font-medium px-3 py-1.5 rounded-xl transition-colors ${
+                        isAllFilteredSelected
+                          ? 'text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-200/80 font-semibold'
+                          : 'text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50 border border-indigo-200/60'
+                      }`}
+                      title={isAllFilteredSelected ? '取消当前列表中的所有选中' : '全选当前列表中的所有技能'}
+                    >
+                      {isAllFilteredSelected ? '取消全选' : '全选当前'}
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Skills Card List Area */}
+              <div className="flex-1 overflow-y-auto p-6 space-y-3.5">
+                {filteredSkills.length === 0 ? (
+                  <div className="py-16 text-center space-y-4 max-w-md mx-auto">
+                    <div className="w-14 h-14 rounded-2xl bg-slate-100 text-slate-400 flex items-center justify-center mx-auto">
+                      <Package className="w-7 h-7" />
+                    </div>
+                    <div>
+                      <h3 className="text-sm font-bold text-slate-800">未找到符合条件的技能</h3>
+                      <p className="text-xs text-slate-500 mt-1">
+                        请调整搜索关键词或重置项目/标签筛选条件。
+                      </p>
+                    </div>
+                    <div className="pt-2 flex items-center justify-center gap-2">
+                      <button
+                        onClick={() => {
+                          setSearchQuery('');
+                          setSelectedScope('all');
+                          setSelectedTags([]);
+                        }}
+                        className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 shadow-2xs transition-colors"
+                      >
+                        重置所有筛选
+                      </button>
+                      <button
+                        onClick={() => setCurrentTab('discovery')}
+                        className="px-3.5 py-1.5 rounded-lg text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 shadow-xs"
+                      >
+                        发现新技能
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {filteredSkills.map((skill) => (
+                      <SkillCard
+                        key={skill.id}
+                        skill={skill}
+                        tools={tools}
+                        isSelected={selectedSkillIds.has(skill.id)}
+                        onToggleSelect={handleToggleSelect}
+                        onToggleToolDeploy={handleToggleToolDeploy}
+                        onOpenDetail={(s) => setDetailSkillId(s.id)}
+                        onUpdateSingle={handleUpdateSingle}
+                        onOpenTagEdit={(s) => setTagEditingSkillId(s.id)}
+                        onUninstallSingle={(s) => requestUninstall([s])}
+                        isUpdating={updatingSkillIds.has(skill.id)}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            </main>
+          </div>
+        )}
+
+        {/* TAB 2: Discovery and Installation */}
+        {currentTab === 'discovery' && (
+          <main className="flex-1 flex flex-col min-w-0 bg-[#FBFBFC] overflow-hidden">
+            <DiscoveryView
+              installedSkills={skills}
+              addToast={addToast}
+              onSelectInstall={(item) => setInstallItem(item)}
+            />
+          </main>
+        )}
+
+        {/* TAB 3: AI Tools Adapters Management */}
+        {currentTab === 'tools' && (
+          <main className="flex-1 flex flex-col min-w-0 bg-[#FBFBFC] overflow-hidden">
+            <ToolAdaptersView tools={tools} addToast={addToast} />
+          </main>
+        )}
+
+        {/* TAB 4: Projects Scopes Management */}
+        {currentTab === 'projects' && (
+          <main className="flex-1 flex flex-col min-w-0 bg-[#FBFBFC] overflow-hidden">
+            <ProjectsView
+              projects={projects}
+              skills={skills}
+              addToast={addToast}
+              onFilterByProject={(projectId) => {
+                setSelectedScope(projectId);
+                setCurrentTab('installed');
+              }}
+            />
+          </main>
+        )}
+
+        {/* TAB 5: Settings Page */}
+        {currentTab === 'settings' && (
+          <main className="flex-1 flex flex-col min-w-0 bg-[#FBFBFC] overflow-hidden">
+            <SettingsView
+              settings={settings}
+              tools={tools}
+              addToast={addToast}
+              onSaveSettings={handleSaveSettings}
+              onOpenOnboarding={() => setShowOnboarding(true)}
+            />
+          </main>
+        )}
+      </div>
+
+      {/* Floating Bottom Batch Operations Bar */}
+      <BatchBar
+        selectedCount={selectedSkillIds.size}
+        totalCount={filteredSkills.length}
+        tools={tools}
+        onClearSelection={handleClearSelection}
+        onSelectAll={handleSelectAll}
+        onBatchDeployTool={handleBatchDeployTool}
+        onBatchShare={() => setShareTarget({ isBatch: true })}
+        onBatchUninstall={() => {
+          const selected = skills.filter((s) => selectedSkillIds.has(s.id));
+          requestUninstall(selected);
+        }}
+      />
+
+      {/* Modals & Dialogs */}
+      {/* 1. Skill Detail Modal */}
+      {detailSkill && (
+        <SkillDetailModal
+          skill={detailSkill}
+          tools={tools}
+          onClose={() => setDetailSkillId(null)}
+          onToggleToolDeploy={handleToggleToolDeploy}
+          onUpdate={handleUpdateSingle}
+          onShare={(s) => setShareTarget({ skill: s })}
+          onUninstall={(s) => requestUninstall([s])}
+          onAddTag={handleAddTagToSkill}
+          onRemoveTag={handleRemoveTagFromSkill}
+          isUpdating={updatingSkillIds.has(detailSkill.id)}
+        />
+      )}
+
+      {/* 2. Unified Install Modal */}
+      {installItem && (
+        <InstallModal
+          item={installItem}
+          tools={tools}
+          projects={projects}
+          onClose={() => setInstallItem(null)}
+          onConfirmInstall={handleCompleteInstall}
+          isInstalling={installUnifiedMutation.isPending}
+          installError={installError}
+        />
+      )}
+
+      {/* 3. Share Modal */}
+      {shareTarget && (
+        <ShareModal
+          skill={shareTarget.skill || null}
+          selectedSkills={
+            shareTarget.isBatch
+              ? skills.filter((s) => selectedSkillIds.has(s.id))
+              : []
+          }
+          onClose={() => setShareTarget(null)}
+          addToast={addToast}
+        />
+      )}
+
+      {/* 4. Tag Edit Modal */}
+      {tagEditingSkill && (
+        <TagEditModal
+          skill={tagEditingSkill}
+          allAvailableTags={allTags.map((t) => t.name)}
+          onClose={() => setTagEditingSkillId(null)}
+          onAddTag={handleAddTagToSkill}
+          onRemoveTag={handleRemoveTagFromSkill}
+        />
+      )}
+
+      {/* 5. Uninstall Confirmation Dialog */}
+      <UninstallDialog
+        isOpen={skillsToUninstall.length > 0}
+        skillsToUninstall={skillsToUninstall}
+        isProcessing={bulkUninstallMutation.isPending}
+        onClose={() => setSkillsToUninstall([])}
+        onConfirm={handleConfirmUninstall}
+      />
+
+      {/* 6. Onboarding & Migration Modal */}
+      <OnboardingModal
+        isOpen={showOnboarding}
+        tools={tools}
+        settings={settings}
+        addToast={addToast}
+        onSaveSettings={handleSaveSettings}
+        onClose={handleCloseOnboarding}
+      />
+    </div>
+  );
+}
