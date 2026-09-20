@@ -236,6 +236,27 @@ impl Database {
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
 
+        // 兼容已有数据库：SQLite 的 CREATE TABLE IF NOT EXISTS 不会补充新增列。
+        // 必须在任何查询 tool_adapters 之前完成（seed_builtin_tools 会先查一次）
+        let mut tool_columns = conn
+            .prepare("PRAGMA table_info(tool_adapters)")
+            .map_err(|e| AppError::Database(e.to_string()))?
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(|e| AppError::Database(e.to_string()))?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        tool_columns.sort();
+        if tool_columns
+            .binary_search(&"project_subdir".to_string())
+            .is_err()
+        {
+            conn.execute(
+                "ALTER TABLE tool_adapters ADD COLUMN project_subdir TEXT NOT NULL DEFAULT ''",
+                [],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        }
+
         conn.execute(
             "CREATE TABLE IF NOT EXISTS skill_projects (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -334,22 +355,8 @@ impl Database {
             let tx = conn
                 .unchecked_transaction()
                 .map_err(|e| AppError::Database(e.to_string()))?;
-            // v2：补 project_subdir 列（新建库的 CREATE TABLE 已含该列，此处仅存量库需要）
-            let has_project_subdir: i64 = tx
-                .query_row(
-                    "SELECT COUNT(*) FROM pragma_table_info('tool_adapters')
-                     WHERE name = 'project_subdir'",
-                    [],
-                    |row| row.get(0),
-                )
-                .map_err(|e| AppError::Database(e.to_string()))?;
-            if has_project_subdir == 0 {
-                tx.execute_batch(
-                    "ALTER TABLE tool_adapters
-                     ADD COLUMN project_subdir TEXT NOT NULL DEFAULT ''",
-                )
-                .map_err(|e| AppError::Database(e.to_string()))?;
-            }
+            // v2：claude-code 回填已证实的 `.claude/skills` 项目内目录约定。
+            // 列本身由 create_tables 的兼容逻辑补齐（必须先于任何查询完成）
             tx.execute(
                 "UPDATE tool_adapters SET project_subdir = '.claude/skills'
                  WHERE id = 'claude-code' AND is_builtin = 1 AND project_subdir = ''",
@@ -673,5 +680,48 @@ impl Database {
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
         Ok(count)
+    }
+}
+
+#[cfg(test)]
+mod legacy_schema_tests {
+    use super::*;
+
+    /// 回归：旧 schema 库（tool_adapters 无 project_subdir 列）走正常初始化路径
+    /// 不得 panic——create_tables 必须先于任何查询补齐新增列
+    /// （曾因列补齐排在 seed_builtin_tools 查询之后导致启动即崩）
+    #[test]
+    fn init_at_adds_project_subdir_to_legacy_tool_adapters() {
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("legacy.db");
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE tool_adapters (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    vendor TEXT NOT NULL DEFAULT 'Custom',
+                    description TEXT NOT NULL DEFAULT '',
+                    default_path TEXT NOT NULL,
+                    current_path TEXT NOT NULL,
+                    is_builtin INTEGER NOT NULL DEFAULT 0,
+                    is_enabled INTEGER NOT NULL DEFAULT 1,
+                    color TEXT NOT NULL DEFAULT '#4F46E5',
+                    sort_order INTEGER NOT NULL DEFAULT 0
+                );
+                INSERT INTO tool_adapters (id, name, default_path, current_path, is_builtin)
+                 VALUES ('claude-code', 'Claude Code', '~/.claude/skills', '~/.claude/skills', 1);",
+            )
+            .unwrap();
+        }
+
+        let db = Database::init_at(&db_path).expect("init legacy db must not panic");
+        let tools = db.list_tool_adapters().expect("list tools");
+        let claude = tools
+            .iter()
+            .find(|t| t.id == "claude-code")
+            .expect("claude-code row");
+        // reconcile 回填已证实的项目内目录约定
+        assert_eq!(claude.project_subdir, ".claude/skills");
     }
 }
