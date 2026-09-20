@@ -323,9 +323,9 @@ export const ToolAdaptersView: React.FC<ToolAdaptersViewProps> = ({
                             ? 'bg-slate-100/90 text-slate-800 border-slate-200/60'
                             : 'bg-slate-50 text-slate-400 border-slate-200/60'
                         }`}
-                        title={tool.projectSubdir || '未配置：该工具不参与项目级分发'}
+                        title={tool.projectSubdir || '未配置'}
                       >
-                        {tool.projectSubdir || '未配置（不参与项目级分发）'}
+                        {tool.projectSubdir || '未配置'}
                       </code>
                       <button
                         type="button"
@@ -342,9 +342,6 @@ export const ToolAdaptersView: React.FC<ToolAdaptersViewProps> = ({
                       </button>
                     </div>
                   )}
-                  <div className="text-[10px] text-slate-400 mt-1">
-                    相对项目根的路径（如 .claude/skills）。安装到项目的技能会按此目录分发到各工具；留空则不参与项目级分发。
-                  </div>
                 </div>
               </div>
             </div>

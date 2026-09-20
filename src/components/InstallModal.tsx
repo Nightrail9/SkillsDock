@@ -276,8 +276,7 @@ export const InstallModal: React.FC<InstallModalProps> = ({
                   if (availableTools.length === 0) {
                     return scope === 'project' ? (
                       <div className="p-3 rounded-2xl border border-dashed border-slate-300 bg-slate-50/70 text-[11px] text-slate-500 leading-relaxed">
-                        还没有工具配置「项目内技能目录」。安装后原技能会存入中央库，之后可随时在技能详情里分发；
-                        如需安装时直接分发到项目内的工具目录，请先到「AI 工具」页为对应工具填写项目内技能目录（如 .claude/skills）。
+                        暂无可用工具：请先到「AI 工具」页为对应工具填写项目内技能目录。
                       </div>
                     ) : (
                       <div className="col-span-full py-3 text-center text-xs text-slate-400 bg-slate-50 rounded-xl border border-dashed border-slate-200">
@@ -316,11 +315,7 @@ export const InstallModal: React.FC<InstallModalProps> = ({
                     </div>
                   );
                 })()}
-                {scope === 'project' && (
-                  <div className="text-[10px] text-slate-400 leading-relaxed">
-                    原技能将存入中央库，并按上方选择分发到项目内各工具的技能目录（方式随「分发方式」设置）。
-                  </div>
-                )}
+
               </div>
 
               {/* Distribution Method Confirmation */}

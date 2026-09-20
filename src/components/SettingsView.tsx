@@ -92,7 +92,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     try {
       await settingsApi.saveLlmConfig(llmInput());
       setLlmMessage(
-        '模型配置已保存（Base URL / 模型 / 提供商）。API Key 只保存在当前客户端，不写入数据库或系统凭据库。',
+        '模型配置已保存。',
       );
       await invalidateAppState();
     } catch (err) {
@@ -117,7 +117,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   const clearLlmKey = () => {
     updateApiKey('');
-    setLlmMessage('已清除当前客户端保存的 API Key。');
+    setLlmMessage('API Key 已清除。');
   };
 
   const processDescriptions = async () => {
@@ -431,7 +431,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             <input value={llmForm.baseUrl} onChange={(e) => setLlmForm({ ...llmForm, baseUrl: e.target.value })} placeholder="https://api.example.com/v1" className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-mono focus:bg-white focus:ring-2 focus:ring-indigo-500/20" />
           </label>
           <label className="block space-y-1.5">
-            <span className="text-xs font-semibold text-slate-700 flex items-center gap-1.5"><KeyRound className="w-3.5 h-3.5" />API Key {keyReady ? '（已保存在当前客户端）' : '（未填写）'}</span>
+            <span className="text-xs font-semibold text-slate-700 flex items-center gap-1.5"><KeyRound className="w-3.5 h-3.5" />API Key</span>
             <div className="relative">
               <input
                 type={showKey ? 'text' : 'password'}
@@ -451,9 +451,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 {showKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
               </button>
             </div>
-            <span className="block text-[11px] text-slate-400 leading-relaxed">
-              仅保存在当前客户端（浏览器本地存储），不写入数据库或系统凭据库；可点右侧眼睛随时查看。
-            </span>
           </label>
           <div className="flex flex-wrap gap-2">
             <button type="button" onClick={saveLlm} disabled={llmBusy !== null} className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white text-xs font-bold">{llmBusy === 'save' ? '保存中...' : '保存模型配置'}</button>
@@ -463,19 +460,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               type="button"
               onClick={processDescriptions}
               disabled={llmBusy !== null || !keyReady}
-              title={
-                keyReady
-                  ? '用当前模型把全部已安装技能的描述批量转换为 25–40 个汉字的中文简介'
-                  : '请先在上方填写 API Key（仅保存在当前客户端，不写入数据库或系统凭据库）'
-              }
+              title={keyReady ? undefined : '请先填写 API Key'}
               className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 disabled:opacity-60 text-white text-xs font-bold inline-flex items-center gap-1.5"
             >
               <WandSparkles className="w-3.5 h-3.5" />{llmBusy === 'process' ? '正在生成...' : '生成中文简介'}
             </button>
           </div>
-          <p className="text-[11px] text-slate-400 leading-relaxed">
-            「生成中文简介」：用上方配置的模型，将全部已安装技能的英文描述翻译、中文描述压缩为 25–40 个汉字的中文简介，展示在技能卡片与详情页。需先填写 API Key 并「保存模型配置」；处理中请保持页面打开。
-          </p>
           {llmMessage && <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 whitespace-pre-wrap">{llmMessage}</div>}
         </div>
 
