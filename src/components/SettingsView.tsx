@@ -115,22 +115,22 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     }
   };
 
-  const clearLlmKey = () => {
-    updateApiKey('');
-    setLlmMessage('API Key 已清除。');
-  };
-
   const processDescriptions = async () => {
     setLlmBusy('process');
     setLlmMessage(null);
     try {
       const result = await settingsApi.processAllSkillDescriptions(apiKey.trim());
       const failed = result.failures.length;
-      setLlmMessage(
-        failed === 0
-          ? `已生成 ${result.succeeded}/${result.processed} 个中文简介。`
-          : `已生成 ${result.succeeded}/${result.processed} 个中文简介；${failed} 个失败，可再次处理重试。`,
-      );
+      if (failed === 0) {
+        setLlmMessage(`已生成 ${result.succeeded}/${result.processed} 个中文简介。`);
+      } else {
+        // 展示去重后的失败原因，便于定位（模型不支持/超长/无原始描述等）
+        const reasons = [...new Set(result.failures.map((f) => f.reason))].slice(0, 3);
+        const reasonLines = reasons.map((r) => `· ${r}`).join('\n');
+        setLlmMessage(
+          `已生成 ${result.succeeded}/${result.processed} 个中文简介；${failed} 个失败：\n${reasonLines}`,
+        );
+      }
       await invalidateAppState();
     } catch (err) {
       setLlmMessage(`处理失败：${errorToString(err)}`);
@@ -413,7 +413,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             <h2 className="text-sm font-bold text-slate-900">LLM 技能描述处理</h2>
           </div>
           <p className="text-xs text-slate-500 leading-relaxed">
-            使用 OpenAI Chat Completions 兼容接口，将已安装技能的英文描述翻译、中文描述压缩为 25–40 个汉字的中文简介。
+            使用 OpenAI Chat Completions 兼容接口，将已安装技能的英文描述翻译、中文描述压缩为约 30 字的中文简介。
           </p>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -455,7 +455,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           <div className="flex flex-wrap gap-2">
             <button type="button" onClick={saveLlm} disabled={llmBusy !== null} className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white text-xs font-bold">{llmBusy === 'save' ? '保存中...' : '保存模型配置'}</button>
             <button type="button" onClick={testLlm} disabled={llmBusy !== null} className="px-3.5 py-2 rounded-xl border border-slate-300 hover:bg-slate-50 disabled:opacity-60 text-slate-700 text-xs font-bold inline-flex items-center gap-1.5"><PlugZap className="w-3.5 h-3.5" />{llmBusy === 'test' ? '测试中...' : '测试连接'}</button>
-            {keyReady && <button type="button" onClick={clearLlmKey} className="px-3.5 py-2 rounded-xl border border-rose-200 hover:bg-rose-50 disabled:opacity-60 text-rose-700 text-xs font-bold">清除 Key</button>}
             <button
               type="button"
               onClick={processDescriptions}
