@@ -2313,17 +2313,23 @@ impl SkillService {
         // 脏 directory：跳过文件操作但仍删 DB 行，避免用户被锁在坏状态
         match Self::require_valid_directory(&record.directory) {
             Ok(_) => {
+                // 先清理全部部署点，任一失败即中止并保留 DB 行（可修复后重试）
                 for tool_id in &record.enabled_tools {
                     if let Ok(Some(tool)) = db.get_tool_adapter(tool_id) {
-                        if let Err(err) = Self::remove_from_tool(db, &record, &tool) {
-                            log::warn!("卸载时从工具 {tool_id} 移除失败（继续）: {err}");
-                        }
+                        Self::remove_from_tool(db, &record, &tool).with_context(|| {
+                            format!("卸载中止：从工具 {tool_id} 移除失败，技能记录已保留")
+                        })?;
                     }
                 }
                 let library = Self::get_library_dir(db)?;
                 let skill_path = library.join(&record.directory);
                 if skill_path.exists() {
-                    fs::remove_dir_all(&skill_path)?;
+                    fs::remove_dir_all(&skill_path).with_context(|| {
+                        format!(
+                            "卸载中止：删除技能库目录 {} 失败，技能记录已保留",
+                            skill_path.display()
+                        )
+                    })?;
                 }
             }
             Err(err) => {
@@ -2371,13 +2377,12 @@ impl SkillService {
         if linked.exists() || Self::is_symlink(&linked) {
             match Self::inspect_destination(&source, &linked, &directory) {
                 Ok(Some(_)) => {
-                    if let Err(err) = Self::remove_path(&linked) {
-                        log::warn!(
-                            "项目级 Skill {} 的链接删除失败，保留 {}: {err}",
-                            record.id,
+                    Self::remove_path(&linked).with_context(|| {
+                        format!(
+                            "卸载中止：删除链接 {} 失败，技能记录已保留",
                             linked.display()
-                        );
-                    }
+                        )
+                    })?;
                 }
                 Ok(None) => {}
                 Err(err) => {
@@ -2391,7 +2396,12 @@ impl SkillService {
         }
 
         if source.exists() {
-            fs::remove_dir_all(&source)?;
+            fs::remove_dir_all(&source).with_context(|| {
+                format!(
+                    "卸载中止：删除项目技能目录 {} 失败，技能记录已保留",
+                    source.display()
+                )
+            })?;
         }
 
         db.delete_skill(&record.id)?;
@@ -2442,13 +2452,8 @@ impl SkillService {
             .collect();
 
         let _guard = state_write_guard();
-        let mut updated = 0;
-        for id in &ids {
-            if db.update_skill_tags(id, &normalized)? {
-                updated += 1;
-            }
-        }
-        Ok(updated)
+        // 单事务批量替换，任一条失败整体回滚
+        Ok(db.set_tags_for_skills(&ids, &normalized)?)
     }
 }
 
@@ -2511,12 +2516,32 @@ impl SkillService {
             let _guard = state_read_guard();
 
             for skill in group_skills {
+                // 有 source_subpath 时按全路径段精确匹配，否则按目录末段匹配
                 let remote_match = remote_dirs.iter().find(|(directory, _)| {
-                    let remote_install_name =
-                        directory.rsplit('/').next().unwrap_or(directory);
-                    remote_install_name.eq_ignore_ascii_case(&skill.directory)
+                    match skill.source_subpath.as_deref().filter(|s| !s.is_empty()) {
+                        Some(subpath) => directory.eq_ignore_ascii_case(subpath),
+                        None => {
+                            let remote_install_name =
+                                directory.rsplit('/').next().unwrap_or(directory);
+                            remote_install_name.eq_ignore_ascii_case(&skill.directory)
+                        }
+                    }
                 });
                 let Some((remote_directory, _)) = remote_match else {
+                    // 远端目录已消失：清除可能残留的更新标记，避免角标卡死
+                    if skill.has_update {
+                        log::warn!(
+                            "远端仓库 {repo_full} 中未找到技能目录 {}，清除更新标记",
+                            skill.directory
+                        );
+                        if let Err(e) = db.update_skill_update_state(
+                            &skill.id,
+                            skill.latest_commit.as_deref(),
+                            false,
+                        ) {
+                            log::warn!("清除更新标记失败 {}: {e}", skill.id);
+                        }
+                    }
                     continue;
                 };
                 let Some(remote_skill_dir) =
@@ -2667,7 +2692,9 @@ impl SkillService {
                 }
             }
         } else {
-            // 全局：对所有已启用工具重部署
+            // 全局：对所有已启用工具重部署；任一失败则中止，DB 元数据不提交
+            // （库内文件已更新，修复工具目录后重试即可，重试走同一原子替换路径）
+            let mut redeploy_errors: Vec<String> = Vec::new();
             for tool_id in &current.enabled_tools {
                 if let Ok(Some(tool)) = db.get_tool_adapter(tool_id) {
                     if let Err(err) = Self::remove_from_tool(db, &current, &tool) {
@@ -2675,8 +2702,15 @@ impl SkillService {
                     }
                     if let Err(err) = Self::deploy_to_tool(db, &current, &tool) {
                         log::warn!("更新后重部署到工具 {tool_id} 失败: {err}");
+                        redeploy_errors.push(format!("{tool_id}: {err}"));
                     }
                 }
+            }
+            if !redeploy_errors.is_empty() {
+                return Err(anyhow!(
+                    "技能库文件已更新，但以下工具重部署失败，请检查工具目录后重试: {}",
+                    redeploy_errors.join("; ")
+                ));
             }
         }
 
@@ -3102,10 +3136,16 @@ impl SkillService {
         let deployed_tools: HashMap<String, bool> = tools
             .iter()
             .map(|t| {
-                (
-                    t.id.clone(),
-                    record.enabled_tools.iter().any(|id| id == &t.id),
-                )
+                let flagged = record.enabled_tools.iter().any(|id| id == &t.id);
+                // DB 标记与落盘双重确认：工具目录被外部删除后不再显示"已部署"
+                let actually_deployed = flagged
+                    && Self::require_valid_directory(&record.directory)
+                        .map(|directory| {
+                            let dest = Self::tool_root(t).join(directory);
+                            dest.exists() || Self::is_symlink(&dest)
+                        })
+                        .unwrap_or(false);
+                (t.id.clone(), actually_deployed)
             })
             .collect();
 
@@ -3322,14 +3362,22 @@ impl SkillService {
         })
     }
 
-    /// 保存应用设置；library_path 变化时先迁移（失败则整体报错不落盘）
-    pub fn save_settings(db: &Database, settings: &AppSettings) -> Result<()> {
+    /// 保存应用设置；library_path 变化时先迁移（失败则整体报错不落盘）。
+    /// 返回因分发方式变更而需要重新部署的项目级技能 id 列表（无变更则为空）。
+    pub fn save_settings(db: &Database, settings: &AppSettings) -> Result<Vec<String>> {
         if !["symlink", "copy"].contains(&settings.distribution_method.as_str()) {
             return Err(anyhow!(
                 "无效的 distribution_method: {}",
                 settings.distribution_method
             ));
         }
+
+        let previous_method = db
+            .get_setting("distribution_method")?
+            // 历史值 auto 视为 symlink（与 get_settings 归一化口径一致）
+            .map(|v| if v == "auto" { "symlink".to_string() } else { v })
+            .filter(|v| ["symlink", "copy"].contains(&v.as_str()))
+            .unwrap_or_else(|| "symlink".to_string());
 
         let current = Self::get_library_dir(db)?;
         let new_raw = settings.library_path.trim();
@@ -3365,7 +3413,63 @@ impl SkillService {
                 "false"
             },
         )?;
-        Ok(())
+
+        // 分发方式变更：存量项目级技能的链接/副本仍是旧方式，交由前端提示一键重部署
+        let mut affected = Vec::new();
+        if previous_method != settings.distribution_method {
+            let skills = db.get_all_skills()?;
+            affected = skills
+                .into_values()
+                .filter(|s| s.is_project())
+                .map(|s| s.id)
+                .collect();
+        }
+        Ok(affected)
+    }
+
+    /// 按当前全局分发方式重建项目级技能的 skills/<dir> 链接/副本
+    /// （分发方式变更后由前端"一键重部署"触发）；外来内容拒绝覆盖
+    pub fn redeploy_project_links(db: &Database, ids: &[String]) -> Result<usize> {
+        let _guard = state_write_guard();
+        let method = Self::get_sync_method(db);
+        let mut done = 0;
+        for id in ids {
+            let record = db
+                .get_skill(id)?
+                .ok_or_else(|| anyhow!("Skill not found: {id}"))?;
+            if !record.is_project() {
+                continue;
+            }
+            let directory = Self::require_valid_directory(&record.directory)?;
+            let project_path = record
+                .project_path
+                .as_deref()
+                .ok_or_else(|| anyhow!("项目级 Skill {} 缺少 project_path", record.id))?;
+            let project_root = PathBuf::from(project_path);
+            let source = project_root.join(".claude").join("skills").join(&directory);
+            Self::validate_sync_source_dir(&source, &directory)?;
+            let linked_dir = project_root.join("skills");
+            let linked = linked_dir.join(&directory);
+            if Self::paths_alias(&source, &linked) {
+                continue;
+            }
+            if Self::inspect_destination(&source, &linked, &directory)?.is_some() {
+                Self::remove_path(&linked)?;
+            }
+            fs::create_dir_all(&linked_dir)?;
+            match method {
+                SyncMethod::Symlink => Self::create_symlink(&source, &linked)?,
+                SyncMethod::Copy => Self::copy_dir_recursive(&source, &linked)?,
+                SyncMethod::Auto => {
+                    if let Err(err) = Self::create_symlink(&source, &linked) {
+                        log::warn!("项目技能 symlink 失败，回退为复制: {err}");
+                        Self::copy_dir_recursive(&source, &linked)?;
+                    }
+                }
+            }
+            done += 1;
+        }
+        Ok(done)
     }
 }
 

@@ -48,7 +48,7 @@ import {
   useBulkUpdateSkills,
   useInstallSkillUnified,
 } from './hooks/useSkills';
-import { useUpdateSettings } from './hooks/useSettings';
+import { useUpdateSettings, useRedeployProjectLinks } from './hooks/useSettings';
 import { skillsApi } from './lib/api';
 import { useQueryClient } from '@tanstack/react-query';
 import { errorToString } from './lib/errors/skillErrorParser';
@@ -75,6 +75,7 @@ export default function App() {
   const bulkUpdateMutation = useBulkUpdateSkills();
   const installUnifiedMutation = useInstallSkillUnified();
   const updateSettingsMutation = useUpdateSettings();
+  const redeployLinksMutation = useRedeployProjectLinks();
 
   // ===== 启动时回填存量"本地技能"的 skills.sh 社区来源（联网精确匹配；有回填则刷新列表） =====
   const queryClient = useQueryClient();
@@ -112,6 +113,8 @@ export default function App() {
   const [tagEditingSkillId, setTagEditingSkillId] = useState<string | null>(null);
   const [skillsToUninstall, setSkillsToUninstall] = useState<Skill[]>([]);
   const [showOnboarding, setShowOnboarding] = useState(false);
+  // 分发方式变更后待重部署的项目技能（null = 无待处理）
+  const [redeployPromptIds, setRedeployPromptIds] = useState<string[] | null>(null);
 
   // 更新中的技能集合（按钮 loading 态）
   const [updatingSkillIds, setUpdatingSkillIds] = useState<Set<string>>(new Set());
@@ -484,11 +487,33 @@ export default function App() {
     );
   };
 
-  // Save settings（设置页 / 新手引导共用）
+  // Save settings（设置页 / 新手引导共用）；分发方式变更时提示一键重部署
   const handleSaveSettings = (newSettings: AppSettings) => {
     updateSettingsMutation.mutate(newSettings, {
-      onSuccess: () => addToast('success', '偏好设置已保存并即时生效'),
+      onSuccess: (affected) => {
+        addToast('success', '偏好设置已保存并即时生效');
+        if (affected.length > 0) {
+          setRedeployPromptIds(affected);
+        }
+      },
       onError: (err) => addToast('error', '设置保存失败', errorToString(err)),
+    });
+  };
+
+  // 一键重部署：按新分发方式重建项目技能的链接/副本
+  const handleRedeployProjectLinks = () => {
+    const ids = redeployPromptIds ?? [];
+    if (ids.length === 0) return;
+    redeployLinksMutation.mutate(ids, {
+      onSuccess: (count) => {
+        setRedeployPromptIds(null);
+        addToast(
+          'success',
+          '重新部署完成',
+          `已按新分发方式重建 ${count} 个项目技能的链接/副本。`,
+        );
+      },
+      onError: (err) => addToast('error', '重新部署失败', errorToString(err)),
     });
   };
 
@@ -835,6 +860,34 @@ export default function App() {
         onClose={() => setSkillsToUninstall([])}
         onConfirm={handleConfirmUninstall}
       />
+
+      {/* 5.5 分发方式变更后的一键重部署提示 */}
+      {redeployPromptIds && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-96 p-6 space-y-4 select-none">
+            <h3 className="text-sm font-bold text-slate-800">分发方式已变更</h3>
+            <p className="text-xs leading-relaxed text-slate-500">
+              {redeployPromptIds.length} 个项目技能仍按旧方式部署，是否立即按新方式重建链接/副本？
+              跳过后可在项目页重新安装对应技能。
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setRedeployPromptIds(null)}
+                className="px-3 py-1.5 text-xs font-medium rounded-lg text-slate-500 hover:bg-slate-100 transition-colors"
+              >
+                稍后处理
+              </button>
+              <button
+                onClick={handleRedeployProjectLinks}
+                disabled={redeployLinksMutation.isPending}
+                className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-indigo-600 text-white hover:bg-indigo-500 transition-colors disabled:opacity-60"
+              >
+                {redeployLinksMutation.isPending ? '部署中…' : '立即重新部署'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 6. Onboarding & Migration Modal */}
       <OnboardingModal

@@ -10,6 +10,40 @@ fn parse_json_string_list(raw: &str) -> Vec<String> {
     serde_json::from_str(raw).unwrap_or_default()
 }
 
+/// strip 核心：在已有事务内从所有技能的 enabled_tools 中移除工具 id
+pub(crate) fn strip_tool_in_tx(
+    tx: &rusqlite::Transaction,
+    tool_id: &str,
+) -> Result<usize, AppError> {
+    let mut stmt = tx
+        .prepare("SELECT id, enabled_tools FROM skills")
+        .map_err(|e| AppError::Database(e.to_string()))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|e| AppError::Database(e.to_string()))?;
+    let mut updates: Vec<(String, String)> = Vec::new();
+    for row in rows {
+        let (id, raw) = row.map_err(|e| AppError::Database(e.to_string()))?;
+        let tools = parse_json_string_list(&raw);
+        if tools.iter().any(|t| t == tool_id) {
+            let remaining: Vec<String> = tools.into_iter().filter(|t| t != tool_id).collect();
+            updates.push((id, to_json_string(&remaining)?));
+        }
+    }
+    drop(stmt);
+    let changed = updates.len();
+    for (id, json) in updates {
+        tx.execute(
+            "UPDATE skills SET enabled_tools = ?1 WHERE id = ?2",
+            params![json, id],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+    }
+    Ok(changed)
+}
+
 const SKILL_COLUMNS: &str = "id, name, display_name, description, directory, tags, scope,
      project_id, project_path, source_type, source_repo, source_branch, source_subpath,
      source_author, source_registry_id, source_url, source_github_detected,
@@ -177,23 +211,23 @@ impl Database {
         Ok(affected > 0)
     }
 
-    /// 从所有技能的 enabled_tools 中移除某个工具 id（删除工具适配器时调用）
+    /// 从所有技能的 enabled_tools 中移除某个工具 id（删除工具适配器时调用，单事务）
     pub fn strip_tool_from_all_skills(&self, tool_id: &str) -> Result<usize, AppError> {
-        let skills = self.get_all_skills()?;
-        let mut changed = 0;
-        for skill in skills.values() {
-            if skill.enabled_tools.iter().any(|t| t == tool_id) {
-                let remaining: Vec<String> = skill
-                    .enabled_tools
-                    .iter()
-                    .filter(|t| *t != tool_id)
-                    .cloned()
-                    .collect();
-                self.update_skill_enabled_tools(&skill.id, &remaining)?;
-                changed += 1;
+        self.with_write_tx(|tx| strip_tool_in_tx(tx, tool_id))
+    }
+
+    /// 批量整体替换多个技能的标签（单事务），返回更新的记录数
+    pub fn set_tags_for_skills(&self, ids: &[String], tags: &[String]) -> Result<usize, AppError> {
+        let json = to_json_string(&tags)?;
+        self.with_write_tx(|tx| {
+            let mut changed = 0;
+            for id in ids {
+                changed += tx
+                    .execute("UPDATE skills SET tags = ?1 WHERE id = ?2", params![json, id])
+                    .map_err(|e| AppError::Database(e.to_string()))?;
             }
-        }
-        Ok(changed)
+            Ok(changed)
+        })
     }
 
     /// 更新内容哈希（不触碰 updated_at）

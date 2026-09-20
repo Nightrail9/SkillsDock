@@ -66,6 +66,7 @@ pub fn run() {
             commands::add_skill_repo,
             commands::get_settings,
             commands::update_settings,
+            commands::redeploy_project_links,
             commands::migrate_library,
             commands::scan_unmanaged_skills,
             commands::import_skills_from_apps,

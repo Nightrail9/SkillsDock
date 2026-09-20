@@ -378,12 +378,10 @@ pub fn update_tool_adapter(
 #[tauri::command]
 pub fn delete_tool_adapter(state: State<'_, AppState>, id: String) -> CmdResult<()> {
     let db = &state.db;
-    if !db.delete_tool_adapter(&id).map_err(|e| e.to_string())? {
+    // 删工具行与剥离各技能 enabled_tools 引用为同一事务，任一步失败整体回滚
+    if !db.delete_tool_and_strip(&id).map_err(|e| e.to_string())? {
         return Err(format!("工具不存在或为内置工具，不可删除: {id}"));
     }
-    // 仅从各技能的 enabled_tools 中移除，不动磁盘上的文件
-    db.strip_tool_from_all_skills(&id)
-        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -521,8 +519,16 @@ pub fn get_settings(state: State<'_, AppState>) -> CmdResult<AppSettings> {
 }
 
 #[tauri::command]
-pub fn update_settings(state: State<'_, AppState>, settings: AppSettings) -> CmdResult<()> {
+pub fn update_settings(
+    state: State<'_, AppState>,
+    settings: AppSettings,
+) -> CmdResult<Vec<String>> {
     SkillService::save_settings(&state.db, &settings).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn redeploy_project_links(state: State<'_, AppState>, ids: Vec<String>) -> CmdResult<usize> {
+    SkillService::redeploy_project_links(&state.db, &ids).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

@@ -192,8 +192,14 @@ export const settingsApi = {
     return invokeCommand('get_settings');
   },
 
-  updateSettings(settings: AppSettings): Promise<void> {
+  /** 保存设置；返回因分发方式变更而需重新部署的项目级技能 id 列表 */
+  updateSettings(settings: AppSettings): Promise<string[]> {
     return invokeCommand('update_settings', { settings });
+  },
+
+  /** 按当前分发方式重建项目级技能的链接/副本（一键重部署），返回处理数 */
+  redeployProjectLinks(ids: string[]): Promise<number> {
+    return invokeCommand('redeploy_project_links', { ids });
   },
 
   /** 迁移中央技能库至新目录 */

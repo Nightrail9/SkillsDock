@@ -37,6 +37,22 @@ pub struct Database {
     pub(crate) conn: Mutex<Connection>,
 }
 
+impl Database {
+    /// 在单个写事务中执行多个操作（任一步失败整体回滚）
+    pub(crate) fn with_write_tx<T>(
+        &self,
+        f: impl FnOnce(&rusqlite::Transaction) -> Result<T, AppError>,
+    ) -> Result<T, AppError> {
+        let conn = lock_conn!(self.conn);
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let result = f(&tx)?;
+        tx.commit().map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(result)
+    }
+}
+
 /// 内置工具适配器种子（对齐前端 initialData.ts 的 7 个内置工具）
 struct BuiltinToolSeed {
     id: &'static str,
@@ -254,27 +270,70 @@ impl Database {
         Ok(count)
     }
 
-    /// 一次性校正存量库：移除已下线的内置工具（gemini-cli）；
-    /// 未检测到技能目录的内置工具置为停用（用户手动启用过的检测到工具不受影响）
+    /// 一次性校正存量库（PRAGMA user_version 迁移标记，v1）：
+    /// 移除已下线的内置工具（gemini-cli）；
+    /// 未检测到技能目录的内置工具置为停用（用户手动启用过的检测到工具不受影响）。
+    /// 整个校正在一个事务内完成；历史 tools_reconcile_v2 标记视为已迁移。
     fn reconcile_builtin_tools(&self) -> Result<(), AppError> {
-        if self.get_setting("tools_reconcile_v2")?.as_deref() == Some("done") {
-            return Ok(());
-        }
+        const SCHEMA_VERSION: i64 = 1;
         {
             let conn = lock_conn!(self.conn);
-            conn.execute(
+            let user_version: i64 = conn
+                .query_row("SELECT user_version FROM pragma_user_version", [], |row| {
+                    row.get(0)
+                })
+                .map_err(|e| AppError::Database(e.to_string()))?;
+            if user_version >= SCHEMA_VERSION {
+                return Ok(());
+            }
+            let legacy_done = conn
+                .query_row(
+                    "SELECT value FROM settings WHERE key = 'tools_reconcile_v2'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap_or_default();
+
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|e| AppError::Database(e.to_string()))?;
+            tx.execute(
                 "DELETE FROM tool_adapters WHERE id = 'gemini-cli' AND is_builtin = 1",
                 [],
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
-        }
-        for tool in self.list_tool_adapters()? {
-            if tool.is_builtin && tool.is_enabled && !Self::tool_path_detected(&tool.current_path)
-            {
-                self.set_tool_enabled(&tool.id, false)?;
+            if legacy_done != "done" {
+                let mut stmt = tx
+                    .prepare(
+                        "SELECT id, current_path FROM tool_adapters
+                         WHERE is_builtin = 1 AND is_enabled = 1",
+                    )
+                    .map_err(|e| AppError::Database(e.to_string()))?;
+                let rows = stmt
+                    .query_map([], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })
+                    .map_err(|e| AppError::Database(e.to_string()))?;
+                let mut to_disable = Vec::new();
+                for row in rows {
+                    let (id, path) = row.map_err(|e| AppError::Database(e.to_string()))?;
+                    if !Self::tool_path_detected(&path) {
+                        to_disable.push(id);
+                    }
+                }
+                drop(stmt);
+                for id in to_disable {
+                    tx.execute(
+                        "UPDATE tool_adapters SET is_enabled = 0 WHERE id = ?1",
+                        params![id],
+                    )
+                    .map_err(|e| AppError::Database(e.to_string()))?;
+                }
             }
+            tx.pragma_update(None, "user_version", SCHEMA_VERSION)
+                .map_err(|e| AppError::Database(e.to_string()))?;
+            tx.commit().map_err(|e| AppError::Database(e.to_string()))?;
         }
-        self.set_setting("tools_reconcile_v2", "done")?;
         Ok(())
     }
 
@@ -425,6 +484,24 @@ impl Database {
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
         Ok(affected > 0)
+    }
+
+    /// 删除自定义工具并同事务从所有技能的 enabled_tools 中移除它。
+    /// 返回 false 表示工具不存在或为内置工具（未做任何修改）。
+    pub fn delete_tool_and_strip(&self, id: &str) -> Result<bool, AppError> {
+        self.with_write_tx(|tx| {
+            let affected = tx
+                .execute(
+                    "DELETE FROM tool_adapters WHERE id = ?1 AND is_builtin = 0",
+                    params![id],
+                )
+                .map_err(|e| AppError::Database(e.to_string()))?;
+            if affected == 0 {
+                return Ok(false);
+            }
+            skills_dao::strip_tool_in_tx(tx, id)?;
+            Ok(true)
+        })
     }
 
     // ========== skill_repos CRUD ==========
