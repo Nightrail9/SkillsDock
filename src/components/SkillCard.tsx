@@ -1,6 +1,5 @@
 import React from 'react';
 import { 
-  GitBranch, 
   RefreshCw, 
   Tag as TagIcon, 
   Trash2, 
@@ -103,12 +102,6 @@ export const SkillCard: React.FC<SkillCardProps> = ({
               <h3 className="text-sm font-bold text-slate-900 truncate" title={skill.displayName}>
                 {skill.displayName}
               </h3>
-
-              {/* Version & Git Commit Hash */}
-              <span className="inline-flex items-center gap-1 font-mono text-[10px] px-2 py-0.5 rounded-md bg-slate-100 text-slate-600 border border-slate-200/70">
-                <GitBranch className="w-2.5 h-2.5 text-slate-400" />
-                <span>{skill.currentCommit || '-'}</span>
-              </span>
 
               {/* Scope Badge */}
               {skill.scope === 'global' ? (
