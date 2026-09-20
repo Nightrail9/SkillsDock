@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "技能坞",
+  "productName": "SkillDock",
   "version": "0.1.0",
   "identifier": "com.skilldock.desktop",
   "build": {
