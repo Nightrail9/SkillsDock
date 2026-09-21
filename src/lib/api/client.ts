@@ -1,14 +1,19 @@
 import { invoke } from '@tauri-apps/api/core';
 import { formatSkillErrorMessage } from '../errors/skillErrorParser';
+import { isTauriEnvironment, handleMockInvoke } from './mockData';
 
 /**
- * Tauri invoke 封装：统一把后端结构化错误（JSON 字符串 / 前缀文本）
- * 转成中文可读的 Error.message 抛出。
+ * Tauri invoke 封装：优先通过 Tauri IPC 通信；若在纯 Web 浏览器环境中访问，
+ * 自动回退到本地 Mock 运行时，保证界面正常加载与功能预览。
  */
 export async function invokeCommand<T>(
   command: string,
   args?: Record<string, unknown>,
 ): Promise<T> {
+  if (!isTauriEnvironment()) {
+    return handleMockInvoke<T>(command, args);
+  }
+
   try {
     return await invoke<T>(command, args);
   } catch (error) {
