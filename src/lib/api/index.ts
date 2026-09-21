@@ -197,6 +197,11 @@ export const settingsApi = {
     return invokeCommand('update_settings', { settings });
   },
 
+  /** 以管理员权限重启客户端（Windows UAC 提权） */
+  restartAsAdmin(): Promise<void> {
+    return invokeCommand('restart_as_admin');
+  },
+
   /** 按当前分发方式重建项目级技能的链接/副本（一键重部署），返回处理数 */
   redeployProjectLinks(ids: string[]): Promise<number> {
     return invokeCommand('redeploy_project_links', { ids });

@@ -619,3 +619,37 @@ pub async fn import_skills_from_apps(
         .map(|r| SkillService::record_to_skill(&state.db, r, &tools, &projects, false))
         .collect())
 }
+
+/// 以管理员权限重启当前应用（Windows UAC 提权）
+#[tauri::command]
+pub fn restart_as_admin() -> CmdResult<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let exe_str = exe.to_string_lossy().to_string();
+
+        let status = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                &format!("Start-Process -FilePath '{}' -Verb RunAs", exe_str),
+            ])
+            .creation_flags(0x08000000) // CREATE_NO_WINDOW
+            .status()
+            .map_err(|e| format!("启动管理员提权进程失败: {e}"))?;
+
+        if status.success() {
+            std::process::exit(0);
+        } else {
+            return Err("提权已取消或授权未通过".to_string());
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(())
+    }
+}
+

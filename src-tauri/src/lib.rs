@@ -74,6 +74,7 @@ pub fn run() {
             commands::migrate_library,
             commands::scan_unmanaged_skills,
             commands::import_skills_from_apps,
+            commands::restart_as_admin,
         ])
         .setup(|app| {
             // 存量项目级技能存储布局迁移（原文件入中央库命名空间）。

@@ -3784,10 +3784,10 @@ impl SkillService {
         Ok(AppSettings {
             distribution_method: db
                 .get_setting("distribution_method")?
-                // 历史值 auto 视为 symlink（部署层仍保留失败回退复制的兜底）
-                .map(|v| if v == "auto" { "symlink".to_string() } else { v })
+                // 历史值 auto 视为 copy
+                .map(|v| if v == "auto" { "copy".to_string() } else { v })
                 .filter(|v| ["symlink", "copy"].contains(&v.as_str()))
-                .unwrap_or_else(|| "symlink".to_string()),
+                .unwrap_or_else(|| "copy".to_string()),
             library_path: config::collapse_tilde(&library_path)?,
             auto_check_update: db
                 .get_setting("auto_check_update")?
@@ -3827,10 +3827,10 @@ impl SkillService {
 
         let previous_method = db
             .get_setting("distribution_method")?
-            // 历史值 auto 视为 symlink（与 get_settings 归一化口径一致）
-            .map(|v| if v == "auto" { "symlink".to_string() } else { v })
+            // 历史值 auto 视为 copy（与 get_settings 归一化口径一致）
+            .map(|v| if v == "auto" { "copy".to_string() } else { v })
             .filter(|v| ["symlink", "copy"].contains(&v.as_str()))
-            .unwrap_or_else(|| "symlink".to_string());
+            .unwrap_or_else(|| "copy".to_string());
 
         let current = Self::get_library_dir(db)?;
         let new_raw = settings.library_path.trim();

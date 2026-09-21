@@ -170,7 +170,7 @@ fn default_locale() -> String {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
-            distribution_method: "symlink".to_string(),
+            distribution_method: "copy".to_string(),
             library_path: String::new(),
             auto_check_update: true,
             check_interval_days: 1,
