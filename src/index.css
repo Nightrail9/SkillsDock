@@ -24,6 +24,17 @@
     -webkit-user-select: none;
   }
 
+  /* 移除全局交互控件的默认外边框，防止点击或切换时出现黑色轮廓闪烁 */
+  *, button, [role="button"], a, input, select {
+    outline: none !important;
+  }
+  *:focus, *:focus-visible,
+  button:focus, button:focus-visible,
+  [role="button"]:focus, [role="button"]:focus-visible,
+  a:focus, a:focus-visible {
+    outline: none !important;
+  }
+
   input, textarea {
     user-select: text;
     -webkit-user-select: text;

@@ -1229,7 +1229,7 @@ impl SkillService {
     /// 技能的规范存储目录（全局：中央库；项目：`<library>/projects/<项目键>/<dir>`）。
     /// 项目级带旧版兜底：新位置不存在且旧位置存在时返回旧位置，
     /// 保证存量未迁移完成的安装仍可读、可更新、可卸载
-    fn skill_storage_dir(db: &Database, record: &SkillRecord) -> Result<PathBuf> {
+    pub fn skill_storage_dir(db: &Database, record: &SkillRecord) -> Result<PathBuf> {
         let directory = Self::require_valid_directory(&record.directory)?;
         if record.is_project() {
             let project_path = record
@@ -3805,6 +3805,9 @@ impl SkillService {
             theme: db
                 .get_setting("theme")?
                 .unwrap_or_else(|| "light".to_string()),
+            locale: db
+                .get_setting("locale")?
+                .unwrap_or_else(|| "zh".to_string()),
             confirm_on_uninstall: db
                 .get_setting("confirm_on_uninstall")?
                 .map(|v| v == "true")
@@ -3855,6 +3858,7 @@ impl SkillService {
             &settings.check_interval_days.to_string(),
         )?;
         db.set_setting("theme", &settings.theme)?;
+        db.set_setting("locale", &settings.locale)?;
         db.set_setting(
             "confirm_on_uninstall",
             if settings.confirm_on_uninstall {

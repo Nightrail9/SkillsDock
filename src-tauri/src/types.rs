@@ -154,11 +154,17 @@ pub struct AppSettings {
     pub developer_mode_enabled: bool,
     #[serde(default = "default_theme")]
     pub theme: String,
+    #[serde(default = "default_locale")]
+    pub locale: String,
     pub confirm_on_uninstall: bool,
 }
 
 fn default_theme() -> String {
     "light".to_string()
+}
+
+fn default_locale() -> String {
+    "zh".to_string()
 }
 
 impl Default for AppSettings {
@@ -171,6 +177,7 @@ impl Default for AppSettings {
             last_update_check_at: 0,
             developer_mode_enabled: false,
             theme: default_theme(),
+            locale: default_locale(),
             confirm_on_uninstall: true,
         }
     }
@@ -428,6 +435,7 @@ pub struct LlmConfig {
     pub provider_name: String,
     pub base_url: String,
     pub model: String,
+    pub language: String,
 }
 
 impl Default for LlmConfig {
@@ -436,6 +444,7 @@ impl Default for LlmConfig {
             provider_name: String::new(),
             base_url: String::new(),
             model: String::new(),
+            language: "zh".to_string(),
         }
     }
 }
@@ -448,6 +457,8 @@ pub struct LlmConfigInput {
     pub provider_name: String,
     pub base_url: String,
     pub model: String,
+    #[serde(default)]
+    pub language: Option<String>,
     #[serde(default)]
     pub api_key: Option<String>,
 }

@@ -8,7 +8,7 @@ export type SkillDeployMethod = 'symlink' | 'copy' | 'auto';
 /** 设置项分发方式（后端 save_settings 仅接受这两个值） */
 export type DistributionMethod = 'symlink' | 'copy';
 
-export type MainNavTab = 'installed' | 'discovery' | 'tools' | 'projects' | 'settings';
+export type MainNavTab = 'installed' | 'discovery' | 'settings';
 
 export interface ToolAdapter {
   id: ToolId;
@@ -82,6 +82,9 @@ export interface ProjectScope {
   isPathValid: boolean;
 }
 
+export type AppTheme = 'light' | 'dark' | 'system';
+export type AppLocale = 'zh' | 'en';
+
 export interface AppSettings {
   distributionMethod: DistributionMethod;
   libraryPath: string;
@@ -90,7 +93,8 @@ export interface AppSettings {
   /** 上次成功检查更新的 Unix 秒时间戳（0 = 从未检查；后端维护，前端只读） */
   lastUpdateCheckAt: number;
   developerModeEnabled: boolean; // for Windows symlink
-  theme: 'light';
+  theme: AppTheme;
+  locale: AppLocale;
   confirmOnUninstall: boolean;
 }
 
@@ -99,12 +103,14 @@ export interface LlmConfig {
   providerName: string;
   baseUrl: string;
   model: string;
+  language: 'zh' | 'en';
 }
 
 export interface LlmConfigInput {
   providerName: string;
   baseUrl: string;
   model: string;
+  language?: 'zh' | 'en';
   /** 仅用于当次 IPC 调用（测试连接/生成简介）；不落数据库、不存凭据库。 */
   apiKey?: string;
 }

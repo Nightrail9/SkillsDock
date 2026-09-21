@@ -564,16 +564,23 @@ pub async fn test_llm_connection(
 }
 
 /// 为指定技能生成简介（安装/更新/导入后由前端触发；也可对选中技能手动生成）。
-/// API Key 由前端按调用传入，不落任何持久层；language: "zh" | "en"
+/// API Key 由前端按调用传入，不落任何持久层；language 可选，缺省读取数据库配置
 #[tauri::command]
 pub async fn process_skill_descriptions(
     state: State<'_, AppState>,
     ids: Vec<String>,
     api_key: String,
-    language: String,
+    language: Option<String>,
 ) -> CmdResult<DescriptionProcessingResult> {
-    let language = if language == "en" { "en" } else { "zh" };
-    LlmService::process_skills(&state.db, &ids, &api_key, language)
+    let configured_lang = state
+        .db
+        .get_setting("llm_language")
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "zh".to_string());
+    let lang = language.unwrap_or(configured_lang);
+    let lang = if lang == "en" { "en" } else { "zh" };
+    LlmService::process_skills(&state.db, &ids, &api_key, lang)
         .await
         .map_err(|e| e.to_string())
 }

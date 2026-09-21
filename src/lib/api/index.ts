@@ -219,13 +219,17 @@ export const settingsApi = {
     return invokeCommand('test_llm_connection', { input });
   },
 
-  /** 为指定技能生成简介；language: 'zh' | 'en' */
+  /** 为指定技能生成简介；language: 'zh' | 'en'（可选，缺省使用设置中的语言） */
   processSkillDescriptions(
     ids: string[],
-    apiKey: string,
-    language: 'zh' | 'en',
+    apiKey?: string,
+    language?: 'zh' | 'en',
   ): Promise<DescriptionProcessingResult> {
-    return invokeCommand('process_skill_descriptions', { ids, apiKey, language });
+    return invokeCommand('process_skill_descriptions', {
+      ids,
+      apiKey: apiKey ?? '',
+      language: language ?? undefined,
+    });
   },
 };
 

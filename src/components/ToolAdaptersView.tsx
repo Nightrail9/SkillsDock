@@ -159,11 +159,7 @@ export const ToolAdaptersView: React.FC<ToolAdaptersViewProps> = ({
   return (
     <div className="flex-1 overflow-y-auto p-8 space-y-6">
       {/* Compact Top Action Bar */}
-      <div className="flex items-center justify-between pb-3 border-b border-slate-200/80">
-        <div className="text-xs text-slate-500 font-medium">
-          已纳管 <strong className="text-slate-800 font-bold">{tools.length}</strong> 个 AI 编程工具
-        </div>
-
+      <div className="flex items-center justify-end pb-3 border-b border-slate-200/80">
         <button
           onClick={() => setShowAddModal(true)}
           className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 rounded-xl transition-colors shadow-xs shrink-0"

@@ -82,10 +82,10 @@ export const Sidebar: React.FC<InstalledFilterSidebarProps> = ({
             {/* 全部技能 */}
             <button
               onClick={() => onSelectScope('all')}
-              className={`w-full text-left px-3 py-2 rounded-xl text-sm font-medium flex items-center justify-between transition-all ${
+              className={`w-full text-left px-3 py-2 rounded-xl text-sm font-medium flex items-center justify-between transition-colors border focus:outline-none focus-visible:outline-none focus:ring-0 ${
                 selectedScope === 'all'
-                  ? 'bg-white text-indigo-600 font-semibold shadow-xs border border-slate-200'
-                  : 'text-slate-600 hover:bg-slate-200/50 hover:text-slate-900'
+                  ? 'bg-white text-indigo-600 font-semibold shadow-xs border-slate-200'
+                  : 'text-slate-600 hover:bg-slate-200/50 hover:text-slate-900 border-transparent'
               }`}
             >
               <div className="flex items-center gap-2.5">
@@ -102,10 +102,10 @@ export const Sidebar: React.FC<InstalledFilterSidebarProps> = ({
             {/* 全局技能 */}
             <button
               onClick={() => onSelectScope('global')}
-              className={`w-full text-left px-3 py-2 rounded-xl text-sm font-medium flex items-center justify-between transition-all ${
+              className={`w-full text-left px-3 py-2 rounded-xl text-sm font-medium flex items-center justify-between transition-colors border focus:outline-none focus-visible:outline-none focus:ring-0 ${
                 selectedScope === 'global'
-                  ? 'bg-white text-indigo-600 font-semibold shadow-xs border border-slate-200'
-                  : 'text-slate-600 hover:bg-slate-200/50 hover:text-slate-900'
+                  ? 'bg-white text-indigo-600 font-semibold shadow-xs border-slate-200'
+                  : 'text-slate-600 hover:bg-slate-200/50 hover:text-slate-900 border-transparent'
               }`}
             >
               <div className="flex items-center gap-2.5">
@@ -131,10 +131,10 @@ export const Sidebar: React.FC<InstalledFilterSidebarProps> = ({
                     <button
                       key={project.id}
                       onClick={() => onSelectScope(project.id)}
-                      className={`w-full text-left px-3 py-1.5 rounded-xl text-sm font-medium flex items-center justify-between transition-all truncate ${
+                      className={`w-full text-left px-3 py-1.5 rounded-xl text-sm font-medium flex items-center justify-between transition-colors truncate border focus:outline-none focus-visible:outline-none focus:ring-0 ${
                         isSelected
-                          ? 'bg-white text-indigo-600 font-semibold shadow-xs border border-slate-200'
-                          : 'text-slate-600 hover:bg-slate-200/50 hover:text-slate-900'
+                          ? 'bg-white text-indigo-600 font-semibold shadow-xs border-slate-200'
+                          : 'text-slate-600 hover:bg-slate-200/50 hover:text-slate-900 border-transparent'
                       }`}
                       title={project.name}
                     >
@@ -165,7 +165,7 @@ export const Sidebar: React.FC<InstalledFilterSidebarProps> = ({
             {selectedTags.length > 0 && (
               <button
                 onClick={onClearTags}
-                className="text-xs text-indigo-600 hover:text-indigo-800 font-medium normal-case hover:underline"
+                className="text-xs text-indigo-600 hover:text-indigo-800 font-medium normal-case hover:underline focus:outline-none focus-visible:outline-none focus:ring-0"
               >
                 清除 ({selectedTags.length})
               </button>
@@ -182,10 +182,10 @@ export const Sidebar: React.FC<InstalledFilterSidebarProps> = ({
                   <button
                     key={t.name}
                     onClick={() => onToggleTag(t.name)}
-                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-sm transition-all ${
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-sm transition-colors border focus:outline-none focus-visible:outline-none focus:ring-0 ${
                       isSelected
-                        ? 'bg-indigo-600 text-white font-medium shadow-xs ring-1 ring-indigo-700'
-                        : 'bg-white text-slate-600 border border-slate-200 hover:border-slate-300 hover:text-slate-900 shadow-2xs'
+                        ? 'bg-indigo-600 text-white font-medium shadow-xs border-indigo-700'
+                        : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300 hover:text-slate-900 shadow-2xs'
                     }`}
                   >
                     <span>#{t.name}</span>

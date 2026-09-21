@@ -2,8 +2,6 @@ import React, { useEffect, useState } from 'react';
 import {
   Package,
   Compass,
-  Bot,
-  FolderGit2,
   Settings as SettingsIcon,
   Minus,
   Square,
@@ -91,34 +89,6 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
       icon: <Compass className="w-4 h-4" />,
     },
     {
-      id: 'tools',
-      label: 'AI 工具',
-      icon: <Bot className="w-4 h-4" />,
-      badge: (
-        <span className={`text-[11px] px-1.5 py-0.5 rounded-full font-medium transition-colors ${
-          currentTab === 'tools'
-            ? 'bg-indigo-100 text-indigo-700'
-            : 'bg-slate-200/80 text-slate-600'
-        }`}>
-          {activeToolsCount}/{tools.length}
-        </span>
-      ),
-    },
-    {
-      id: 'projects',
-      label: '项目工程',
-      icon: <FolderGit2 className="w-4 h-4" />,
-      badge: projectsCount > 0 ? (
-        <span className={`text-[11px] px-1.5 py-0.5 rounded-full font-medium transition-colors ${
-          currentTab === 'projects'
-            ? 'bg-indigo-100 text-indigo-700'
-            : 'bg-slate-200/80 text-slate-600'
-        }`}>
-          {projectsCount}
-        </span>
-      ) : undefined,
-    },
-    {
       id: 'settings',
       label: '设置',
       icon: <SettingsIcon className="w-4 h-4" />,
@@ -130,7 +100,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
       data-tauri-drag-region
       onMouseDown={handleDragMouseDown}
       onDoubleClick={handleDoubleClick}
-      className="bg-white/90 backdrop-blur-md border-b border-slate-200/80 select-none shrink-0 sticky top-0 z-30 transition-all"
+      className="bg-white/90 backdrop-blur-md border-b border-slate-200/80 select-none shrink-0 sticky top-0 z-30"
     >
       <div className="h-14 pl-5 flex items-center justify-between gap-4">
         {/* Left: Brand Identity */}
@@ -160,10 +130,10 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
               <button
                 key={item.id}
                 onClick={() => onSelectTab(item.id)}
-                className={`relative flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-sm transition-all duration-150 ${
+                className={`relative flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-sm transition-colors duration-150 focus:outline-none focus-visible:outline-none focus:ring-0 border ${
                   isActive
-                    ? 'bg-white text-indigo-600 font-semibold shadow-xs border border-slate-200/60'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-white/50 font-medium'
+                    ? 'bg-white text-indigo-600 font-semibold shadow-xs border-slate-200/60'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-white/50 font-medium border-transparent'
                 }`}
               >
                 <span className={isActive ? 'text-indigo-600' : 'text-slate-400'}>

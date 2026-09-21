@@ -21,8 +21,8 @@ interface BatchBarProps {
   onBatchTag?: (tag: string) => void;
   onBatchUninstall: () => void;
   onBatchShare?: () => void;
-  /** 为选中技能生成简介（二级菜单选择语言） */
-  onGenerateDescriptions?: (language: 'zh' | 'en') => void;
+  /** 为选中技能生成简介（直接采用设置中配置的语言） */
+  onGenerateDescriptions?: () => void;
 }
 
 export const BatchBar: React.FC<BatchBarProps> = ({
@@ -36,7 +36,6 @@ export const BatchBar: React.FC<BatchBarProps> = ({
   onGenerateDescriptions,
 }) => {
   const [showDeployDropdown, setShowDeployDropdown] = useState(false);
-  const [showDescDropdown, setShowDescDropdown] = useState(false);
   const enabledTools = tools.filter((t) => t.isEnabled);
 
   if (selectedCount === 0) return null;
@@ -107,52 +106,16 @@ export const BatchBar: React.FC<BatchBarProps> = ({
           )}
         </div>
 
-        {/* Generate descriptions dropdown */}
+        {/* Generate descriptions */}
         {onGenerateDescriptions && (
-          <div className="relative">
-            <button
-              onClick={() => setShowDescDropdown(!showDescDropdown)}
-              disabled={isPending}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition-all border disabled:opacity-60 ${
-                showDescDropdown
-                  ? 'bg-indigo-600 text-white border-indigo-500 shadow-xs'
-                  : 'bg-slate-800 hover:bg-slate-700/90 text-slate-200 border-slate-700/80'
-              }`}
-            >
-              <WandSparkles className="w-3.5 h-3.5 text-indigo-400" />
-              <span>生成简介</span>
-            </button>
-
-            {showDescDropdown && (
-              <div className="absolute bottom-full mb-3 left-0 w-72 bg-white text-slate-800 rounded-2xl shadow-2xl border border-slate-200 p-2.5 space-y-1.5 z-50 animate-in fade-in zoom-in-95 duration-150">
-                <div className="text-[11px] font-bold text-slate-400 uppercase px-2.5 py-1">
-                  为选中的 {selectedCount} 个技能生成简介，选择语言:
-                </div>
-                <button
-                  onClick={() => {
-                    setShowDescDropdown(false);
-                    onGenerateDescriptions('zh');
-                  }}
-                  disabled={isPending}
-                  className="w-full flex items-center justify-between p-2 hover:bg-slate-50 rounded-xl transition-colors disabled:opacity-60"
-                >
-                  <span className="font-medium text-xs text-slate-800">中文简介</span>
-                  <span className="text-[11px] text-slate-400">约 30 字，失败的可重新生成</span>
-                </button>
-                <button
-                  onClick={() => {
-                    setShowDescDropdown(false);
-                    onGenerateDescriptions('en');
-                  }}
-                  disabled={isPending}
-                  className="w-full flex items-center justify-between p-2 hover:bg-slate-50 rounded-xl transition-colors disabled:opacity-60"
-                >
-                  <span className="font-medium text-xs text-slate-800">English Description</span>
-                  <span className="text-[11px] text-slate-400">about 15 words</span>
-                </button>
-              </div>
-            )}
-          </div>
+          <button
+            onClick={onGenerateDescriptions}
+            disabled={isPending}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700/90 text-slate-200 transition-colors border border-slate-700/80 disabled:opacity-60"
+          >
+            <WandSparkles className="w-3.5 h-3.5 text-indigo-400" />
+            <span>生成简介</span>
+          </button>
         )}
 
         {/* Batch Share */}

@@ -27,10 +27,9 @@ import { Sidebar } from './components/Sidebar';
 import { SkillCard } from './components/SkillCard';
 import { InstallModal } from './components/InstallModal';
 import { DiscoveryView } from './components/DiscoveryView';
-import { ToolAdaptersView } from './components/ToolAdaptersView';
-import { ProjectsView } from './components/ProjectsView';
-import { SettingsView } from './components/SettingsView';
+import { SettingsView, SettingsSubTab } from './components/SettingsView';
 import { ShareModal } from './components/ShareModal';
+import { useTheme } from './hooks/useTheme';
 import { OnboardingModal } from './components/OnboardingModal';
 import { BatchBar } from './components/BatchBar';
 import { UninstallDialog } from './components/UninstallDialog';
@@ -64,6 +63,8 @@ export default function App() {
   const projects = useMemo(() => appState?.projects ?? [], [appState]);
   const appSettings = appState?.settings ?? null;
 
+  useTheme(appSettings?.theme || 'light');
+
   // ===== Toast 通知（右上角弹窗，操作结果与失败反馈的用户可见出口） =====
   const { toasts, addToast, dismissToast } = useToast();
 
@@ -82,37 +83,87 @@ export default function App() {
   // ===== 启动时回填存量"本地技能"的 skills.sh 社区来源（联网精确匹配；有回填则刷新列表） =====
   const queryClient = useQueryClient();
 
-  // 为选中技能生成简介（语言由 BatchBar 二级菜单选择）；
-  // 新安装/更新/导入的技能由各自 mutation 自动生成中文简介
-  const [descBusy, setDescBusy] = useState(false);
-  const handleGenerateDescriptions = async (language: 'zh' | 'en') => {
+  // 正在单独生成简介的技能集合
+  const [generatingDescSkillIds, setGeneratingDescSkillIds] = useState<Set<string>>(new Set());
+
+  // 为单个技能生成/重新生成简介
+  const handleGenerateSingleDescription = useCallback(async (skill: Skill, language?: 'zh' | 'en') => {
     const apiKey = readLlmApiKey().trim();
-    if (!apiKey) {
-      addToast('error', '请先在设置页填写 API Key');
+    if (!apiKey && !appState?.llmConfig?.baseUrl) {
+      addToast('error', '请先在设置页完成模型配置');
+      return;
+    }
+    const targetLanguage = language || appState?.llmConfig?.language || 'zh';
+    setGeneratingDescSkillIds((prev) => new Set(prev).add(skill.id));
+    try {
+      const result = await settingsApi.processSkillDescriptions(
+        [skill.id],
+        apiKey,
+        targetLanguage,
+      );
+      if (result.failures.length > 0) {
+        addToast('error', '简介生成失败', result.failures[0].reason);
+      } else {
+        addToast('success', '简介已生成', `已成功生成「${skill.displayName}」的简介`);
+      }
+      queryClient.invalidateQueries({ queryKey: APP_STATE_KEY });
+    } catch (err) {
+      addToast('error', '简介生成失败', errorToString(err));
+    } finally {
+      setGeneratingDescSkillIds((prev) => {
+        const next = new Set(prev);
+        next.delete(skill.id);
+        return next;
+      });
+    }
+  }, [appState?.llmConfig, addToast, queryClient]);
+
+  // 为选中技能生成简介（语言由设置项决定）
+  const [descBusy, setDescBusy] = useState(false);
+  const handleGenerateDescriptions = async () => {
+    const apiKey = readLlmApiKey().trim();
+    if (!apiKey && !appState?.llmConfig?.baseUrl) {
+      addToast('error', '请先在设置页完成模型配置');
       return;
     }
     if (selectedSkillIds.size === 0) return;
-    // 只补生成尚未生成/生成失败的；已生成的不会被覆盖
-    const targetIds = [...selectedSkillIds].filter((id) => {
-      const skill = skills.find((s) => s.id === id);
-      return skill && skill.descriptionStatus !== 'ready';
-    });
-    if (targetIds.length === 0) {
-      addToast('error', '选中的技能均已生成简介');
-      return;
-    }
+    const targetIds = [...selectedSkillIds];
+    const language = appState?.llmConfig?.language || 'zh';
     setDescBusy(true);
+    setGeneratingDescSkillIds((prev) => new Set([...prev, ...targetIds]));
     try {
-      await settingsApi.processSkillDescriptions(
+      const result = await settingsApi.processSkillDescriptions(
         targetIds,
         apiKey,
         language,
       );
+      if (result.failures.length > 0) {
+        if (result.succeeded > 0) {
+          addToast(
+            'warning',
+            `部分简介生成失败 (${result.succeeded}/${result.processed} 成功)`,
+            result.failures.map((f) => f.reason).slice(0, 2).join('; '),
+          );
+        } else {
+          addToast(
+            'error',
+            '简介生成失败',
+            result.failures[0]?.reason || '模型调用未返回有效结果',
+          );
+        }
+      } else if (result.succeeded > 0) {
+        addToast('success', '简介生成完成', `已成功生成 ${result.succeeded} 个技能的简介！`);
+      }
       queryClient.invalidateQueries({ queryKey: APP_STATE_KEY });
     } catch (err) {
       addToast('error', '简介生成失败', errorToString(err));
     } finally {
       setDescBusy(false);
+      setGeneratingDescSkillIds((prev) => {
+        const next = new Set(prev);
+        targetIds.forEach((id) => next.delete(id));
+        return next;
+      });
     }
   };
   useEffect(() => {
@@ -132,6 +183,7 @@ export default function App() {
 
   // Top Navigation Tab (Default to 'installed')
   const [currentTab, setCurrentTab] = useState<MainNavTab>('installed');
+  const [settingsSubTab, setSettingsSubTab] = useState<SettingsSubTab>('general');
 
   // Installed Page Filter States (Project Scope & Tags)
   const [searchQuery, setSearchQuery] = useState('');
@@ -251,7 +303,7 @@ export default function App() {
   // ===== Handlers =====
 
   // Toggle single tool deployment for a skill
-  const handleToggleToolDeploy = (skillId: string, toolId: ToolId) => {
+  const handleToggleToolDeploy = useCallback((skillId: string, toolId: ToolId) => {
     const targetSkill = skills.find((s) => s.id === skillId);
     const targetTool = tools.find((t) => t.id === toolId);
     if (!targetSkill || !targetTool) return;
@@ -273,17 +325,17 @@ export default function App() {
         },
       },
     );
-  };
+  }, [skills, tools, toggleToolMutation, addToast]);
 
   // Toggle single selection
-  const handleToggleSelect = (skillId: string) => {
+  const handleToggleSelect = useCallback((skillId: string) => {
     setSelectedSkillIds((prev) => {
       const next = new Set(prev);
       if (next.has(skillId)) next.delete(skillId);
       else next.add(skillId);
       return next;
     });
-  };
+  }, []);
 
   const isAllFilteredSelected =
     filteredSkills.length > 0 &&
@@ -305,9 +357,9 @@ export default function App() {
     setSelectedSkillIds(new Set(filteredSkills.map((s) => s.id)));
   };
 
-  const handleClearSelection = () => {
+  const handleClearSelection = useCallback(() => {
     setSelectedSkillIds(new Set());
-  };
+  }, []);
 
   // Batch deploy / retract（串行执行，汇总成功/失败）
   const handleBatchDeployTool = (toolId: ToolId, enable: boolean) => {
@@ -356,7 +408,7 @@ export default function App() {
   };
 
   // Update single skill
-  const handleUpdateSingle = (skill: Skill) => {
+  const handleUpdateSingle = useCallback((skill: Skill) => {
     setUpdatingSkillIds((prev) => new Set(prev).add(skill.id));
     updateSkillMutation.mutate(skill.id, {
       onSuccess: (updated) => {
@@ -377,7 +429,7 @@ export default function App() {
         });
       },
     });
-  };
+  }, [updateSkillMutation, addToast]);
 
   // 批量更新（串行），供「全部更新」与「批量更新选中」共用
   const runBulkUpdate = (ids: string[]) => {
@@ -402,7 +454,7 @@ export default function App() {
   };
 
   // 发起卸载：根据设置决定是否需要二次确认
-  const requestUninstall = (targets: Skill[]) => {
+  const requestUninstall = useCallback((targets: Skill[]) => {
     if (targets.length === 0) return;
     if (appSettings?.confirmOnUninstall !== false) {
       setSkillsToUninstall(targets);
@@ -425,7 +477,15 @@ export default function App() {
         },
       );
     }
-  };
+  }, [appSettings?.confirmOnUninstall, bulkUninstallMutation, handleClearSelection, addToast]);
+
+  const handleOpenTagEdit = useCallback((skill: Skill) => {
+    setTagEditingSkillId(skill.id);
+  }, []);
+
+  const handleUninstallSingle = useCallback((skill: Skill) => {
+    requestUninstall([skill]);
+  }, [requestUninstall]);
 
   // Uninstall confirm（单个与批量共用，串行执行）
   const handleConfirmUninstall = () => {
@@ -641,215 +701,200 @@ export default function App() {
       {/* Main App Workspace */}
       <div className="flex-1 flex overflow-hidden">
         {/* TAB 1: Installed Skills Management (with Left Filter Sidebar) */}
-        {currentTab === 'installed' && (
-          <div className="flex-1 flex overflow-hidden">
-            <Sidebar
-              selectedScope={selectedScope}
-              onSelectScope={setSelectedScope}
-              projectList={projects.map((p) => ({
-                id: p.id,
-                name: p.name,
-                count: skills.filter((s) => s.projectId === p.id).length,
-              }))}
-              globalCount={skills.filter((s) => s.scope === 'global').length}
-              totalCount={skills.length}
-              allTags={allTags}
-              selectedTags={selectedTags}
-              onToggleTag={handleToggleTag}
-              onClearTags={() => setSelectedTags([])}
-              onOpenRegisterProject={() => setCurrentTab('projects')}
-            />
+        <div className={`flex-1 overflow-hidden ${currentTab === 'installed' ? 'flex' : 'hidden'}`}>
+          <Sidebar
+            selectedScope={selectedScope}
+            onSelectScope={setSelectedScope}
+            projectList={projects.map((p) => ({
+              id: p.id,
+              name: p.name,
+              count: skills.filter((s) => s.projectId === p.id).length,
+            }))}
+            globalCount={skills.filter((s) => s.scope === 'global').length}
+            totalCount={skills.length}
+            allTags={allTags}
+            selectedTags={selectedTags}
+            onToggleTag={handleToggleTag}
+            onClearTags={() => setSelectedTags([])}
+            onOpenRegisterProject={() => {
+              setSettingsSubTab('projects');
+              setCurrentTab('settings');
+            }}
+          />
 
-            {/* Right Skills Main Content */}
-            <main className="flex-1 flex flex-col min-w-0 bg-[#FBFBFC] overflow-hidden">
-              {/* Action Toolbar（与左侧栏头部同高，保证底部横线对齐） */}
-              <div className="h-[61px] px-6 bg-white/95 backdrop-blur-xs border-b border-slate-200/80 flex items-center justify-between gap-4 flex-wrap">
-                <div className="flex items-center gap-3 flex-1 min-w-[280px]">
-                  <div className="relative flex-1 max-w-sm">
-                    <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
-                    <input
-                      type="text"
-                      placeholder="搜索技能名称、描述、标签或仓库..."
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      className="w-full pl-9 pr-7 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-hidden focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all placeholder:text-slate-400 shadow-2xs"
-                    />
-                    {searchQuery && (
-                      <button
-                        onClick={() => setSearchQuery('')}
-                        className="absolute right-2.5 top-2.5 text-slate-400 hover:text-slate-600 text-xs w-4 h-4 rounded-full flex items-center justify-center bg-slate-200/80"
-                      >
-                        ×
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                {/* Right Actions: Check Updates + Updates + Selection Controls */}
-                <div className="flex items-center gap-2 flex-wrap">
-                  <button
-                    onClick={handleCheckUpdates}
-                    disabled={checkUpdatesMutation.isPending}
-                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-sm font-medium transition-colors ${
-                      updateAvailableCount > 0
-                        ? 'border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100'
-                        : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50 shadow-2xs'
-                    }`}
-                    title="一键检查所有技能的远端 Git 提交与版本更新"
-                  >
-                    <RotateCw className={`w-4 h-4 ${checkUpdatesMutation.isPending ? 'animate-spin text-indigo-600' : 'text-slate-500'}`} />
-                    <span>{checkUpdatesMutation.isPending ? '检测中...' : updateAvailableCount > 0 ? `有 ${updateAvailableCount} 项待更新` : '检查更新'}</span>
-                  </button>
-
-                  {updateAvailableCount > 0 && (
+          {/* Right Skills Main Content */}
+          <main className="flex-1 flex flex-col min-w-0 bg-[#FBFBFC] overflow-hidden">
+            {/* Action Toolbar（与左侧栏头部同高，保证底部横线对齐） */}
+            <div className="h-[61px] px-6 bg-white/95 backdrop-blur-xs border-b border-slate-200/80 flex items-center justify-between gap-4 flex-wrap">
+              <div className="flex items-center gap-3 flex-1 min-w-[280px]">
+                <div className="relative flex-1 max-w-sm">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+                  <input
+                    type="text"
+                    placeholder="搜索技能名称、描述、标签或仓库..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="w-full pl-9 pr-7 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-hidden focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-colors placeholder:text-slate-400 shadow-2xs"
+                  />
+                  {searchQuery && (
                     <button
-                      onClick={handleUpdateAll}
-                      disabled={bulkUpdateMutation.isPending}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 active:bg-amber-700 disabled:opacity-60 text-white text-sm font-semibold shadow-xs transition-colors"
-                      title="一键将所有有更新的技能更新至远程最新提交"
+                      onClick={() => setSearchQuery('')}
+                      className="absolute right-2.5 top-2.5 text-slate-400 hover:text-slate-600 text-xs w-4 h-4 rounded-full flex items-center justify-center bg-slate-200/80"
                     >
-                      <RotateCw className={`w-4 h-4 ${bulkUpdateMutation.isPending ? 'animate-spin' : ''}`} />
-                      <span>全部更新 ({updateAvailableCount})</span>
-                    </button>
-                  )}
-
-                  <span className="h-4 w-px bg-slate-200 mx-1" />
-
-                  <span className="text-sm text-slate-500">
-                    显示 <strong className="text-slate-800">{filteredSkills.length}</strong> / {skills.length} 项
-                    {selectedSkillIds.size > 0 && (
-                      <span className="ml-1 text-indigo-600 font-medium">
-                        (已选 {selectedSkillIds.size})
-                      </span>
-                    )}
-                  </span>
-
-                  {selectedSkillIds.size > 0 && !isAllFilteredSelected && (
-                    <button
-                      onClick={handleClearSelection}
-                      className="text-sm text-slate-500 hover:text-slate-700 font-medium px-2 py-1 rounded-lg hover:bg-slate-100 transition-colors"
-                      title="清除所有已选项目"
-                    >
-                      清除选择
-                    </button>
-                  )}
-
-                  {filteredSkills.length > 0 && (
-                    <button
-                      onClick={handleToggleSelectAll}
-                      className={`text-sm font-medium px-3 py-1.5 rounded-xl transition-colors ${
-                        isAllFilteredSelected
-                          ? 'text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-200/80 font-semibold'
-                          : 'text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50 border border-indigo-200/60'
-                      }`}
-                      title={isAllFilteredSelected ? '取消当前列表中的所有选中' : '全选当前列表中的所有技能'}
-                    >
-                      {isAllFilteredSelected ? '取消全选' : '全选当前'}
+                      ×
                     </button>
                   )}
                 </div>
               </div>
 
-              {/* Skills Card List Area */}
-              <div className="flex-1 overflow-y-auto p-6 space-y-3.5">
-                {filteredSkills.length === 0 ? (
-                  <div className="py-16 text-center space-y-4 max-w-md mx-auto">
-                    <div className="w-14 h-14 rounded-2xl bg-slate-100 text-slate-400 flex items-center justify-center mx-auto">
-                      <Package className="w-7 h-7" />
-                    </div>
-                    <div>
-                      <h3 className="text-sm font-bold text-slate-800">未找到符合条件的技能</h3>
-                      <p className="text-xs text-slate-500 mt-1">
-                        请调整搜索关键词或重置项目/标签筛选条件。
-                      </p>
-                    </div>
-                    <div className="pt-2 flex items-center justify-center gap-2">
-                      <button
-                        onClick={() => {
-                          setSearchQuery('');
-                          setSelectedScope('all');
-                          setSelectedTags([]);
-                        }}
-                        className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 shadow-2xs transition-colors"
-                      >
-                        重置所有筛选
-                      </button>
-                      <button
-                        onClick={() => setCurrentTab('discovery')}
-                        className="px-3.5 py-1.5 rounded-lg text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 shadow-xs"
-                      >
-                        发现新技能
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    {filteredSkills.map((skill) => (
-                      <SkillCard
-                        key={skill.id}
-                        skill={skill}
-                        tools={tools}
-                        isSelected={selectedSkillIds.has(skill.id)}
-                        onToggleSelect={handleToggleSelect}
-                        onToggleToolDeploy={handleToggleToolDeploy}
-                        onUpdateSingle={handleUpdateSingle}
-                        onOpenTagEdit={(s) => setTagEditingSkillId(s.id)}
-                        onUninstallSingle={(s) => requestUninstall([s])}
-                        isUpdating={updatingSkillIds.has(skill.id)}
-                      />
-                    ))}
-                  </div>
+              {/* Right Actions: Check Updates + Updates + Selection Controls */}
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  onClick={handleCheckUpdates}
+                  disabled={checkUpdatesMutation.isPending}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-sm font-medium transition-colors ${
+                    updateAvailableCount > 0
+                      ? 'border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100'
+                      : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50 shadow-2xs'
+                  }`}
+                  title="一键检查所有技能的远端 Git 提交与版本更新"
+                >
+                  <RotateCw className={`w-4 h-4 ${checkUpdatesMutation.isPending ? 'animate-spin text-indigo-600' : 'text-slate-500'}`} />
+                  <span>{checkUpdatesMutation.isPending ? '检测中...' : updateAvailableCount > 0 ? `有 ${updateAvailableCount} 项待更新` : '检查更新'}</span>
+                </button>
+
+                {updateAvailableCount > 0 && (
+                  <button
+                    onClick={handleUpdateAll}
+                    disabled={bulkUpdateMutation.isPending}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 active:bg-amber-700 disabled:opacity-60 text-white text-sm font-semibold shadow-xs transition-colors"
+                    title="一键将所有有更新的技能更新至远程最新提交"
+                  >
+                    <RotateCw className={`w-4 h-4 ${bulkUpdateMutation.isPending ? 'animate-spin' : ''}`} />
+                    <span>全部更新 ({updateAvailableCount})</span>
+                  </button>
+                )}
+
+                <span className="h-4 w-px bg-slate-200 mx-1" />
+
+                <span className="text-sm text-slate-500">
+                  显示 <strong className="text-slate-800">{filteredSkills.length}</strong> / {skills.length} 项
+                  {selectedSkillIds.size > 0 && (
+                    <span className="ml-1 text-indigo-600 font-medium">
+                      (已选 {selectedSkillIds.size})
+                    </span>
+                  )}
+                </span>
+
+                {selectedSkillIds.size > 0 && !isAllFilteredSelected && (
+                  <button
+                    onClick={handleClearSelection}
+                    className="text-sm text-slate-500 hover:text-slate-700 font-medium px-2 py-1 rounded-lg hover:bg-slate-100 transition-colors"
+                    title="清除所有已选项目"
+                  >
+                    清除选择
+                  </button>
+                )}
+
+                {filteredSkills.length > 0 && (
+                  <button
+                    onClick={handleToggleSelectAll}
+                    className={`text-sm font-medium px-3 py-1.5 rounded-xl transition-colors ${
+                      isAllFilteredSelected
+                        ? 'text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-200/80 font-semibold'
+                        : 'text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50 border border-indigo-200/60'
+                    }`}
+                    title={isAllFilteredSelected ? '取消当前列表中的所有选中' : '全选当前列表中的所有技能'}
+                  >
+                    {isAllFilteredSelected ? '取消全选' : '全选当前'}
+                  </button>
                 )}
               </div>
-            </main>
-          </div>
-        )}
+            </div>
+
+            {/* Skills Card List Area */}
+            <div className="flex-1 overflow-y-auto p-6 space-y-3.5">
+              {filteredSkills.length === 0 ? (
+                <div className="py-16 text-center space-y-4 max-w-md mx-auto">
+                  <div className="w-14 h-14 rounded-2xl bg-slate-100 text-slate-400 flex items-center justify-center mx-auto">
+                    <Package className="w-7 h-7" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-800">未找到符合条件的技能</h3>
+                    <p className="text-xs text-slate-500 mt-1">
+                      请调整搜索关键词或重置项目/标签筛选条件。
+                    </p>
+                  </div>
+                  <div className="pt-2 flex items-center justify-center gap-2">
+                    <button
+                      onClick={() => {
+                        setSearchQuery('');
+                        setSelectedScope('all');
+                        setSelectedTags([]);
+                      }}
+                      className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 shadow-2xs transition-colors"
+                    >
+                      重置所有筛选
+                    </button>
+                    <button
+                      onClick={() => setCurrentTab('discovery')}
+                      className="px-3.5 py-1.5 rounded-lg text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 shadow-xs"
+                    >
+                      发现新技能
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {filteredSkills.map((skill) => (
+                    <SkillCard
+                      key={skill.id}
+                      skill={skill}
+                      tools={tools}
+                      isSelected={selectedSkillIds.has(skill.id)}
+                      onToggleSelect={handleToggleSelect}
+                      onToggleToolDeploy={handleToggleToolDeploy}
+                      onUpdateSingle={handleUpdateSingle}
+                      onOpenTagEdit={handleOpenTagEdit}
+                      onUninstallSingle={handleUninstallSingle}
+                      onGenerateDescSingle={handleGenerateSingleDescription}
+                      isUpdating={updatingSkillIds.has(skill.id)}
+                      isGeneratingDesc={generatingDescSkillIds.has(skill.id)}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          </main>
+        </div>
 
         {/* TAB 2: Discovery and Installation */}
-        {currentTab === 'discovery' && (
-          <main className="flex-1 flex flex-col min-w-0 bg-[#FBFBFC] overflow-hidden">
-            <DiscoveryView
-              installedSkills={skills}
-              addToast={addToast}
-              onSelectInstall={(item) => setInstallItem(item)}
-            />
-          </main>
-        )}
+        <main className={`flex-1 flex-col min-w-0 bg-[#FBFBFC] overflow-hidden ${currentTab === 'discovery' ? 'flex' : 'hidden'}`}>
+          <DiscoveryView
+            installedSkills={skills}
+            addToast={addToast}
+            onSelectInstall={(item) => setInstallItem(item)}
+          />
+        </main>
 
-        {/* TAB 3: AI Tools Adapters Management */}
-        {currentTab === 'tools' && (
-          <main className="flex-1 flex flex-col min-w-0 bg-[#FBFBFC] overflow-hidden">
-            <ToolAdaptersView tools={tools} addToast={addToast} />
-          </main>
-        )}
-
-        {/* TAB 4: Projects Scopes Management */}
-        {currentTab === 'projects' && (
-          <main className="flex-1 flex flex-col min-w-0 bg-[#FBFBFC] overflow-hidden">
-            <ProjectsView
-              projects={projects}
-              skills={skills}
-              addToast={addToast}
-              onFilterByProject={(projectId) => {
-                setSelectedScope(projectId);
-                setCurrentTab('installed');
-              }}
-            />
-          </main>
-        )}
-
-        {/* TAB 5: Settings Page */}
-        {currentTab === 'settings' && (
-          <main className="flex-1 flex flex-col min-w-0 bg-[#FBFBFC] overflow-hidden">
-            <SettingsView
-              settings={settings}
-              tools={tools}
-              addToast={addToast}
-              onSaveSettings={handleSaveSettings}
-              onOpenOnboarding={() => setShowOnboarding(true)}
-            />
-          </main>
-        )}
+        {/* TAB 3: Settings Page (Unified Settings, Tools, Projects, Models, About) */}
+        <main className={`flex-1 flex-col min-w-0 bg-[#FBFBFC] overflow-hidden ${currentTab === 'settings' ? 'flex' : 'hidden'}`}>
+          <SettingsView
+            settings={settings}
+            tools={tools}
+            projects={projects}
+            skills={skills}
+            addToast={addToast}
+            onSaveSettings={handleSaveSettings}
+            onOpenOnboarding={() => setShowOnboarding(true)}
+            onFilterByProject={(projectId) => {
+              setSelectedScope(projectId);
+              setCurrentTab('installed');
+            }}
+            activeSubTab={settingsSubTab}
+            onSelectSubTab={setSettingsSubTab}
+          />
+        </main>
       </div>
 
       {/* Floating Bottom Batch Operations Bar */}
@@ -953,6 +998,7 @@ export default function App() {
           addToast={addToast}
           onSaveSettings={handleSaveSettings}
           onClose={handleCloseOnboarding}
+          isMandatory={onboardingCompleted === false}
         />
       )}
 

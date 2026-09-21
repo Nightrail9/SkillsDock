@@ -6,7 +6,8 @@ import {
   ExternalLink,
   FolderGit2,
   Globe,
-  Layers
+  Layers,
+  WandSparkles
 } from 'lucide-react';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { Skill, ToolAdapter, ToolId } from '../types';
@@ -58,10 +59,12 @@ interface SkillCardProps {
   onUpdateSingle: (skill: Skill) => void;
   onOpenTagEdit?: (skill: Skill) => void;
   onUninstallSingle: (skill: Skill) => void;
+  onGenerateDescSingle?: (skill: Skill) => void;
   isUpdating?: boolean;
+  isGeneratingDesc?: boolean;
 }
 
-export const SkillCard: React.FC<SkillCardProps> = ({
+const SkillCardComponent: React.FC<SkillCardProps> = ({
   skill,
   tools,
   isSelected,
@@ -70,7 +73,9 @@ export const SkillCard: React.FC<SkillCardProps> = ({
   onUpdateSingle,
   onOpenTagEdit,
   onUninstallSingle,
+  onGenerateDescSingle,
   isUpdating = false,
+  isGeneratingDesc = false,
 }) => {
   const enabledTools = tools.filter((t) => t.isEnabled);
   const deployedCount = enabledTools.filter((t) => !!skill.deployedTools[t.id]).length;
@@ -78,9 +83,9 @@ export const SkillCard: React.FC<SkillCardProps> = ({
 
   return (
     <div
-      className={`group relative bg-white rounded-2xl border transition-all duration-200 p-5 ${
+      className={`group relative bg-white rounded-2xl border transition-[border-color,box-shadow,background-color] duration-150 p-5 ${
         isSelected
-          ? 'border-indigo-500 ring-2 ring-indigo-500/15 shadow-sm bg-indigo-50/15'
+          ? 'border-indigo-500 ring-2 ring-indigo-500/15 shadow-xs bg-indigo-50/15'
           : 'border-slate-200/85 hover:border-slate-300 hover:shadow-md'
       }`}
     >
@@ -149,15 +154,6 @@ export const SkillCard: React.FC<SkillCardProps> = ({
                 </span>
               )}
 
-              {skill.descriptionStatus !== 'ready' && (
-                <span className={`text-[10px] px-2 py-0.5 rounded-md border font-medium ${
-                  skill.descriptionStatus === 'failed'
-                    ? 'text-rose-700 bg-rose-50 border-rose-200'
-                    : 'text-slate-600 bg-slate-50 border-slate-200'
-                }`}>
-                  {skill.descriptionStatus === 'failed' ? '简介生成失败' : '等待生成简介'}
-                </span>
-              )}
             </div>
 
             <p className="text-xs text-slate-600 line-clamp-2 leading-relaxed">
@@ -179,6 +175,37 @@ export const SkillCard: React.FC<SkillCardProps> = ({
               <span>更新</span>
             </button>
           )}
+
+          {/* 生成/重新生成简介按钮 */}
+          <button
+            type="button"
+            onClick={() => onGenerateDescSingle?.(skill)}
+            disabled={isGeneratingDesc}
+            className={`p-1.5 rounded-lg transition-colors ${
+              isGeneratingDesc
+                ? 'text-indigo-600 bg-indigo-50 cursor-default'
+                : skill.descriptionStatus === 'failed'
+                ? 'text-rose-600 bg-rose-50 hover:bg-rose-100 hover:text-rose-700'
+                : 'text-slate-400 hover:text-indigo-600 hover:bg-indigo-50'
+            }`}
+            title={
+              isGeneratingDesc
+                ? '正在生成简介...'
+                : skill.descriptionStatus === 'failed'
+                ? '简介生成失败，点击重新生成'
+                : skill.descriptionStatus === 'ready'
+                ? '使用 LLM 重新生成简介'
+                : '使用 LLM 生成简介'
+            }
+          >
+            <WandSparkles
+              className={`w-4 h-4 ${
+                isGeneratingDesc
+                  ? 'text-indigo-600 animate-pulse drop-shadow-[0_0_8px_rgba(99,102,241,0.9)]'
+                  : ''
+              }`}
+            />
+          </button>
 
           <SourceChannelIcon skill={skill} />
 
@@ -237,7 +264,7 @@ export const SkillCard: React.FC<SkillCardProps> = ({
                 <button
                   key={tool.id}
                   onClick={() => onToggleToolDeploy(skill.id, tool.id)}
-                  className={`group flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs transition-all border ${
+                  className={`group flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs transition-colors border ${
                     isDeployed
                       ? 'bg-emerald-50/80 border-emerald-300/90 text-emerald-950 font-medium shadow-2xs hover:bg-emerald-100/80'
                       : 'bg-slate-50 border-slate-200/80 text-slate-400 hover:text-slate-700 hover:border-slate-300'
@@ -268,3 +295,5 @@ export const SkillCard: React.FC<SkillCardProps> = ({
     </div>
   );
 };
+
+export const SkillCard = React.memo(SkillCardComponent);

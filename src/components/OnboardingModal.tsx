@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { 
   X, 
-  FolderSync, 
+  Radar, 
   Check, 
   ArrowRight, 
   CheckCircle2,
@@ -10,7 +10,8 @@ import {
   Cpu,
   Sparkles,
   FolderOpen,
-  AlertCircle
+  AlertCircle,
+  Loader2
 } from 'lucide-react';
 import { ToolAdapter, AppSettings, AddToastFn, DistributionMethod } from '../types';
 import { ToolBrandIcon } from './icons/BrandIcons';
@@ -26,6 +27,7 @@ interface OnboardingModalProps {
   addToast: AddToastFn;
   onSaveSettings?: (newSettings: AppSettings) => Promise<boolean>;
   onClose: () => void;
+  isMandatory?: boolean;
 }
 
 export const OnboardingModal: React.FC<OnboardingModalProps> = ({
@@ -35,6 +37,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
   addToast,
   onSaveSettings,
   onClose,
+  isMandatory = false,
 }) => {
   const [currentStep, setCurrentStep] = useState(1);
   const [migrationDone, setMigrationDone] = useState(false);
@@ -71,13 +74,13 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (!isMandatory && e.key === 'Escape') onClose();
     };
     if (isOpen) {
       window.addEventListener('keydown', handleKeyDown);
     }
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, onClose]);
+  }, [isOpen, onClose, isMandatory]);
 
   const homeDir = useAppState().data?.homeDir;
 
@@ -136,10 +139,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
 
   return (
     <div 
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4 overflow-y-auto animate-in fade-in duration-150"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-md p-4 overflow-y-auto animate-in fade-in duration-150"
     >
       <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 w-full max-w-xl overflow-hidden animate-in zoom-in-95 duration-150">
         {/* Top Header */}
@@ -148,14 +148,21 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
             <span className="text-xs font-bold text-indigo-700 bg-indigo-50 px-3 py-1 rounded-full border border-indigo-200">
               首次配置向导 ({currentStep} / {totalSteps})
             </span>
+            {isMandatory && (
+              <span className="text-[11px] font-medium text-amber-700 bg-amber-50 px-2.5 py-0.5 rounded-full border border-amber-200/60">
+                初次使用请完成配置
+              </span>
+            )}
           </div>
-          <button
-            onClick={onClose}
-            className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 rounded-xl transition-colors"
-            title="关闭 (Esc)"
-          >
-            <X className="w-4 h-4" />
-          </button>
+          {!isMandatory && (
+            <button
+              onClick={onClose}
+              className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 rounded-xl transition-colors"
+              title="关闭 (Esc)"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
         </div>
 
         {/* Step Content */}
@@ -351,12 +358,28 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
                     </p>
                   </div>
                 ) : scanQuery.isLoading || importMutation.isPending ? (
-                  <div className="text-center space-y-3">
-                    <FolderSync className="w-8 h-8 mx-auto text-indigo-600 animate-spin" />
-                    <div className="text-slate-700 text-xs font-medium">
-                      {importMutation.isPending
-                        ? '正在迁移技能至技能仓库...'
-                        : '正在逐一探测各工具目录中的未受管技能...'}
+                  <div className="py-6 flex flex-col items-center justify-center space-y-4">
+                    <div className="relative flex items-center justify-center">
+                      <div className="absolute w-16 h-16 rounded-full bg-indigo-500/20 animate-ping" />
+                      <div className="absolute w-12 h-12 rounded-full bg-indigo-500/30 animate-pulse" />
+                      <div className="relative w-12 h-12 rounded-2xl bg-gradient-to-tr from-indigo-600 to-indigo-500 text-white flex items-center justify-center shadow-md shadow-indigo-500/25 border border-indigo-400/30">
+                        <Radar className="w-6 h-6 animate-spin [animation-duration:3s] text-white" />
+                      </div>
+                    </div>
+                    <div className="text-center space-y-1">
+                      <div className="text-slate-800 text-xs font-bold">
+                        {importMutation.isPending
+                          ? '正在迁移技能至技能仓库...'
+                          : '正在智能探测已安装 AI 工具中的存量技能...'}
+                      </div>
+                      <div className="text-[11px] text-slate-400">
+                        {importMutation.isPending
+                          ? '正在建立统一事实源并分发'
+                          : '自动扫描各个工具技能目录，稍候片刻'}
+                      </div>
+                    </div>
+                    <div className="w-44 h-1 bg-slate-200 rounded-full overflow-hidden">
+                      <div className="h-full bg-indigo-600 rounded-full animate-pulse w-full" />
                     </div>
                   </div>
                 ) : scanQuery.isError ? (
@@ -427,6 +450,10 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
               >
                 上一步
               </button>
+            ) : isMandatory ? (
+              <span className="text-xs text-slate-400 font-medium px-2 py-1">
+                步骤 1 / {totalSteps}
+              </span>
             ) : (
               <button
                 onClick={onClose}
@@ -455,9 +482,17 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
                   handleSaveRepoSettings();
                   onClose();
                 }}
-                className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold shadow-xs"
+                disabled={importMutation.isPending || scanQuery.isLoading}
+                className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-xl font-bold shadow-xs transition-colors flex items-center gap-1.5"
               >
-                完成并开启管理
+                {importMutation.isPending ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>技能导入中...</span>
+                  </>
+                ) : (
+                  <span>完成并开启管理</span>
+                )}
               </button>
             )}
           </div>

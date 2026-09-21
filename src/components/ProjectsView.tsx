@@ -92,11 +92,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
   return (
     <div className="flex-1 overflow-y-auto p-8 space-y-6">
       {/* Compact Top Action Bar */}
-      <div className="flex items-center justify-between pb-3 border-b border-slate-200/80">
-        <div className="text-xs text-slate-500 font-medium">
-          已关联 <strong className="text-slate-800 font-bold">{projects.length}</strong> 个本地代码项目
-        </div>
-
+      <div className="flex items-center justify-end pb-3 border-b border-slate-200/80">
         <div className="flex items-center gap-2 shrink-0">
           <button
             onClick={() =>

@@ -205,7 +205,6 @@ impl Database {
         Ok(affected > 0)
     }
 
-    /// 仅提交通过校验的用户可见描述，原始 description 永远保留。
     pub fn update_skill_display_description(
         &self,
         id: &str,
@@ -217,6 +216,18 @@ impl Database {
             .execute(
                 "UPDATE skills SET display_description = ?1, description_status = ?2 WHERE id = ?3",
                 params![display_description, status, id],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(affected > 0)
+    }
+
+    /// 更新技能原始描述（用于从 SKILL.md 或 README 回填缺失的元数据）
+    pub fn update_skill_raw_description(&self, id: &str, description: &str) -> Result<bool, AppError> {
+        let conn = lock_conn!(self.conn);
+        let affected = conn
+            .execute(
+                "UPDATE skills SET description = ?1 WHERE id = ?2",
+                params![description, id],
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
         Ok(affected > 0)
