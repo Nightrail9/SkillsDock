@@ -2,6 +2,7 @@ import React from 'react';
 import { AlertTriangle, CheckCircle2, Info, X, XCircle } from 'lucide-react';
 import { ToastType } from '../types';
 import { ToastItem } from '../hooks/useToast';
+import { useTranslation } from '../hooks/useLocale';
 
 interface ToastContainerProps {
   toasts: ToastItem[];
@@ -18,6 +19,7 @@ const TOAST_ICON: Record<ToastType, React.ReactNode> = {
 /** 页面顶部中间的浮动通知。按产品要求只展示错误类信息
  * （成功/提示类不弹窗，避免干扰；AI 工具启停等状态变更不再弹提示）。 */
 export const ToastContainer: React.FC<ToastContainerProps> = ({ toasts, onDismiss }) => {
+  const { t } = useTranslation();
   const errorToasts = toasts.filter((toast) => toast.type === 'error');
   if (errorToasts.length === 0) return null;
 
@@ -41,7 +43,7 @@ export const ToastContainer: React.FC<ToastContainerProps> = ({ toasts, onDismis
           <button
             onClick={() => onDismiss(toast.id)}
             className="shrink-0 mt-0.5 text-slate-300 hover:text-slate-500 transition-colors"
-            aria-label="关闭通知"
+            aria-label={t('关闭通知', 'Dismiss notification')}
           >
             <X className="w-3.5 h-3.5" />
           </button>

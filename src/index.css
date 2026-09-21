@@ -45,6 +45,244 @@
   }
 }
 
+/* ============================================================
+   品牌色体系（取自应用图标三色叶片）
+   青蓝 #2FBBF4 / 紫罗兰 #655CF0 / 暖橙 #FB8F44
+   渐变仅用于 Logo 右侧的词标文字，其余界面保持原有配色
+   ============================================================ */
+:root {
+  --brand-blue: #2fbbf4;
+  --brand-violet: #655cf0;
+  --brand-orange: #fb8f44;
+
+  --grad-brand: linear-gradient(115deg, var(--brand-blue) 0%, var(--brand-violet) 52%, var(--brand-orange) 100%);
+}
+
+/* 品牌渐变文字（仅应用标题词标） */
+.brand-wordmark {
+  background: var(--grad-brand);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* Existing views use explicit slate utilities. These scoped overrides keep the
+   current components legible when the persisted dark preference is applied.
+   暗色主题：以 #1B1B1F 为基底的中性色阶（带极轻微紫调，与品牌色呼应） */
+html[data-theme='dark'] {
+  color-scheme: dark;
+}
+
+html[data-theme='dark'] body,
+html[data-theme='dark'] [class*='bg-[#FBFBFC]'] {
+  background-color: #1b1b1f !important;
+  color: #e8e8ec;
+}
+
+/* 表面层级：bg-white = 卡片/侧栏，bg-slate-50 = 输入框/悬浮底，依次递进 */
+html[data-theme='dark'] [class~='bg-white'] {
+  background-color: #222228 !important;
+}
+html[data-theme='dark'] [class*='bg-white/'] {
+  background-color: rgba(255, 255, 255, 0.06) !important;
+}
+/* 高不透明度白色玻璃（顶栏/工具栏）用深色玻璃替代 */
+html[data-theme='dark'] [class*='bg-white/90'],
+html[data-theme='dark'] [class*='bg-white/95'] {
+  background-color: rgba(28, 28, 34, 0.92) !important;
+}
+html[data-theme='dark'] [class~='bg-white/25'] {
+  background-color: rgba(255, 255, 255, 0.2) !important;
+}
+
+html[data-theme='dark'] [class~='bg-slate-50'] {
+  background-color: #26262c !important;
+}
+html[data-theme='dark'] [class*='bg-slate-50/'] {
+  background-color: rgba(255, 255, 255, 0.04) !important;
+}
+html[data-theme='dark'] [class~='bg-slate-100'] {
+  background-color: #2a2a31 !important;
+}
+html[data-theme='dark'] [class*='bg-slate-100/'] {
+  background-color: rgba(255, 255, 255, 0.06) !important;
+}
+html[data-theme='dark'] [class~='bg-slate-200'] {
+  background-color: #32323a !important;
+}
+html[data-theme='dark'] [class*='bg-slate-200/'] {
+  background-color: rgba(255, 255, 255, 0.09) !important;
+}
+html[data-theme='dark'] [class~='bg-slate-300'] {
+  background-color: #41414b !important;
+}
+
+/* 深色按钮/深色玻璃（BatchBar、遮罩层）：保持深色语义 */
+html[data-theme='dark'] [class*='bg-slate-700'] {
+  background-color: #43434d !important;
+}
+html[data-theme='dark'] [class*='bg-slate-800'] {
+  background-color: #35353e !important;
+}
+html[data-theme='dark'] [class~='bg-slate-900'] {
+  background-color: #2c2c34 !important;
+}
+html[data-theme='dark'] [class*='bg-slate-900/'] {
+  background-color: rgba(9, 9, 13, 0.62) !important;
+}
+
+html[data-theme='dark'] [class*='border-slate-'],
+html[data-theme='dark'] input,
+html[data-theme='dark'] textarea,
+html[data-theme='dark'] select {
+  border-color: #34343c !important;
+}
+html[data-theme='dark'] input,
+html[data-theme='dark'] textarea,
+html[data-theme='dark'] select {
+  border-color: #3e3e48 !important;
+}
+
+/* 文字灰阶（slate-200/300 用于深色表面上的浅字，保持不动） */
+html[data-theme='dark'] [class*='text-slate-900'],
+html[data-theme='dark'] [class*='text-slate-800'],
+html[data-theme='dark'] [class*='text-slate-700'] {
+  color: #f2f2f5 !important;
+}
+html[data-theme='dark'] [class*='text-slate-600'],
+html[data-theme='dark'] [class*='text-slate-500'] {
+  color: #c0c0ca !important;
+}
+html[data-theme='dark'] [class*='text-slate-400'] {
+  color: #8b8b96 !important;
+}
+
+/* 品牌强调色（紫罗兰）：暗色下提亮保证可读 */
+html[data-theme='dark'] [class*='text-indigo-'] {
+  color: #b7b4fb !important;
+}
+html[data-theme='dark'] [class~='bg-indigo-50'],
+html[data-theme='dark'] [class*='bg-indigo-50/'] {
+  background-color: #2a2a3e !important;
+}
+html[data-theme='dark'] [class~='bg-indigo-100'],
+html[data-theme='dark'] [class*='bg-indigo-100/'] {
+  background-color: #312f4c !important;
+}
+html[data-theme='dark'] [class*='border-indigo-100'],
+html[data-theme='dark'] [class*='border-indigo-200'] {
+  border-color: #4a4778 !important;
+}
+
+/* 状态色（琥珀/玫红/翠绿/蓝/紫/天蓝）在暗色下的协调化 */
+html[data-theme='dark'] [class~='bg-amber-50'],
+html[data-theme='dark'] [class*='bg-amber-50/'],
+html[data-theme='dark'] [class*='bg-amber-100'] {
+  background-color: #38301f !important;
+}
+html[data-theme='dark'] [class*='text-amber-'] {
+  color: #efc26b !important;
+}
+html[data-theme='dark'] [class*='border-amber-'] {
+  border-color: #55482b !important;
+}
+
+html[data-theme='dark'] [class~='bg-rose-50'],
+html[data-theme='dark'] [class*='bg-rose-50/'],
+html[data-theme='dark'] [class*='bg-rose-100'] {
+  background-color: #3a2733 !important;
+}
+html[data-theme='dark'] [class*='text-rose-'] {
+  color: #f492a9 !important;
+}
+html[data-theme='dark'] [class*='border-rose-'] {
+  border-color: #5a3648 !important;
+}
+
+html[data-theme='dark'] [class~='bg-emerald-50'],
+html[data-theme='dark'] [class*='bg-emerald-50/'],
+html[data-theme='dark'] [class*='bg-emerald-100'] {
+  background-color: #20342a !important;
+}
+html[data-theme='dark'] [class*='text-emerald-'] {
+  color: #7cd9a5 !important;
+}
+html[data-theme='dark'] [class*='border-emerald-'] {
+  border-color: #35543f !important;
+}
+
+html[data-theme='dark'] [class~='bg-blue-50'] {
+  background-color: #222b41 !important;
+}
+html[data-theme='dark'] [class*='text-blue-'] {
+  color: #96b4f8 !important;
+}
+html[data-theme='dark'] [class*='border-blue-'] {
+  border-color: #38486e !important;
+}
+
+html[data-theme='dark'] [class~='bg-purple-50'] {
+  background-color: #2b2740 !important;
+}
+html[data-theme='dark'] [class*='text-purple-'] {
+  color: #c9a9f5 !important;
+}
+
+html[data-theme='dark'] [class~='bg-sky-50'] {
+  background-color: #1f2f3c !important;
+}
+html[data-theme='dark'] [class*='text-sky-'] {
+  color: #7ec3ed !important;
+}
+
+html[data-theme='dark'] .glass-panel,
+html[data-theme='dark'] .glass-dropdown,
+html[data-theme='dark'] .card-elevated {
+  background: #222228 !important;
+  border-color: #34343c !important;
+}
+html[data-theme='dark'] .glass-dropdown {
+  background: rgba(35, 35, 41, 0.97) !important;
+}
+
+html[data-theme='dark'] .markdown-doc,
+html[data-theme='dark'] .markdown-doc h1,
+html[data-theme='dark'] .markdown-doc h2,
+html[data-theme='dark'] .markdown-doc h3,
+html[data-theme='dark'] .markdown-doc h4 {
+  color: #e8e8ec;
+}
+
+html[data-theme='dark'] .markdown-doc code,
+html[data-theme='dark'] .markdown-doc th {
+  background: #2a2a31;
+  border-color: #34343c;
+  color: #e8e8ec;
+}
+html[data-theme='dark'] .markdown-doc pre {
+  background: #15151a;
+  border: 1px solid #2c2c34;
+}
+
+html[data-theme='dark'] .markdown-doc th,
+html[data-theme='dark'] .markdown-doc td,
+html[data-theme='dark'] .markdown-doc hr {
+  border-color: #34343c;
+}
+
+html[data-theme='dark'] .markdown-doc blockquote {
+  background: rgba(111, 102, 240, 0.1);
+  border-left-color: #4a4778;
+  color: #c0c0ca;
+}
+
+html[data-theme='dark'] ::-webkit-scrollbar-thumb {
+  background: #3a3a43;
+}
+html[data-theme='dark'] ::-webkit-scrollbar-thumb:hover {
+  background: #4c4c56;
+}
+
 /* Custom refined scrollbars */
 ::-webkit-scrollbar {
   width: 6px;
@@ -137,7 +375,7 @@
   font-size: 0.92em;
 }
 .markdown-doc pre {
-  background: #0f172a;
+  background: #17171c;
   color: #e2e8f0;
   border-radius: 12px;
   padding: 0.85em 1em;

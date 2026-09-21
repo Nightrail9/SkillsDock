@@ -11,8 +11,12 @@ import {
   Sparkles,
   FolderOpen,
   AlertCircle,
-  Loader2
+  Loader2,
+  ShieldCheck,
+  RefreshCw,
 } from 'lucide-react';
+import { openUrl } from '@tauri-apps/plugin-opener';
+import { settingsApi } from '../lib/api';
 import { ToolAdapter, AppSettings, AddToastFn, DistributionMethod } from '../types';
 import { ToolBrandIcon } from './icons/BrandIcons';
 import { useScanUnmanagedSkills, useImportSkillsFromApps } from '../hooks/useSkills';
@@ -48,6 +52,40 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
   const [deployMethod, setDeployMethod] = useState<DistributionMethod>(
     settings?.distributionMethod === 'copy' ? 'copy' : 'symlink'
   );
+
+  const [showAdminConfirm, setShowAdminConfirm] = useState(false);
+  const [isElevating, setIsElevating] = useState(false);
+
+  const handleSelectDeployMethod = (method: DistributionMethod) => {
+    if (method === 'symlink') {
+      if (!settings?.developerModeEnabled) {
+        setShowAdminConfirm(true);
+        return;
+      }
+    }
+    setDeployMethod(method);
+  };
+
+  const handleRestartAsAdmin = async () => {
+    setIsElevating(true);
+    try {
+      if (settings && onSaveSettings) {
+        await onSaveSettings({ ...settings, distributionMethod: 'symlink' });
+      }
+      await settingsApi.restartAsAdmin();
+    } catch (err) {
+      setIsElevating(false);
+      addToast('error', '管理员提权未完成', errorToString(err));
+    }
+  };
+
+  const handleOpenDeveloperSettings = async () => {
+    try {
+      await openUrl('ms-settings:developers');
+    } catch (err) {
+      addToast('error', '无法打开系统设置', errorToString(err));
+    }
+  };
 
   // 第 4 步真实扫描未受管技能
   const scanQuery = useScanUnmanagedSkills({ enabled: isOpen && currentStep === 4 });
@@ -175,7 +213,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
               </div>
               <div className="text-center space-y-1.5">
                 <h3 className="text-base font-bold text-slate-900">
-                  欢迎使用技能坞 (SkillDock)
+                  欢迎使用 SkillsDock
                 </h3>
                 <p className="text-slate-500 leading-relaxed max-w-md mx-auto">
                   告别技能在多个 AI 编程工具间的重复复制与版本脱节。本客户端以技能仓库为单一事实源，实现一处更新、全工具即时同步。
@@ -246,25 +284,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
                   <div className="grid grid-cols-2 gap-2.5">
                     <button
                       type="button"
-                      onClick={() => setDeployMethod('symlink')}
-                      className={`p-3 rounded-2xl border text-left transition-all ${
-                        deployMethod === 'symlink'
-                          ? 'border-indigo-600 bg-indigo-50/50 ring-1 ring-indigo-600 shadow-2xs'
-                          : 'border-slate-200 hover:border-slate-300 bg-white'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between font-bold text-xs text-slate-900">
-                        <span>符号链接 (推荐)</span>
-                        {deployMethod === 'symlink' && <span className="w-2 h-2 rounded-full bg-indigo-600" />}
-                      </div>
-                      <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">
-                        零磁盘冗余，技能仓库更新后各工具即刻生效。
-                      </p>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setDeployMethod('copy')}
+                      onClick={() => handleSelectDeployMethod('copy')}
                       className={`p-3 rounded-2xl border text-left transition-all ${
                         deployMethod === 'copy'
                           ? 'border-indigo-600 bg-indigo-50/50 ring-1 ring-indigo-600 shadow-2xs'
@@ -272,11 +292,29 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
                       }`}
                     >
                       <div className="flex items-center justify-between font-bold text-xs text-slate-900">
-                        <span>文件复制</span>
+                        <span>文件复制 (推荐)</span>
                         {deployMethod === 'copy' && <span className="w-2 h-2 rounded-full bg-indigo-600" />}
                       </div>
                       <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">
-                        直接拷贝完整文件，适用于权限受限环境。
+                        直接拷贝完整技能文件，稳定可靠，免管理员权限。
+                      </p>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleSelectDeployMethod('symlink')}
+                      className={`p-3 rounded-2xl border text-left transition-all ${
+                        deployMethod === 'symlink'
+                          ? 'border-indigo-600 bg-indigo-50/50 ring-1 ring-indigo-600 shadow-2xs'
+                          : 'border-slate-200 hover:border-slate-300 bg-white'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between font-bold text-xs text-slate-900">
+                        <span>符号链接 (需管理员或开发者模式)</span>
+                        {deployMethod === 'symlink' && <span className="w-2 h-2 rounded-full bg-indigo-600" />}
+                      </div>
+                      <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">
+                        零磁盘冗余，统一映射。需开发者模式或管理员权限。
                       </p>
                     </button>
                   </div>
@@ -498,6 +536,61 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
           </div>
         </div>
       </div>
+
+      {/* 符号链接管理员提权提示弹窗（居中浮于最顶层） */}
+      {showAdminConfirm && (
+        <div className="fixed inset-0 z-60 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4 animate-in fade-in duration-150">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4 animate-in zoom-in-95 duration-150">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center shrink-0 border border-indigo-100">
+                <ShieldCheck className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="font-bold text-slate-900 text-sm">切换符号链接需要管理员权限</h3>
+                <p className="text-xs text-slate-500 mt-0.5">Windows 符号链接需要提权或开启开发者模式</p>
+              </div>
+            </div>
+
+            <div className="p-3.5 bg-slate-50 rounded-2xl border border-slate-200/80 text-xs text-slate-600 space-y-2 leading-relaxed">
+              <p>
+                在 Windows 系统中，普通非管理员程序无法创建符号链接。若要使用此模式，您可以：
+              </p>
+              <ol className="list-decimal pl-4 space-y-1.5 text-slate-500">
+                <li><strong className="text-slate-700">以管理员身份重启软件：</strong>将弹出系统 UAC 提权确认，后续使用过程中均拥有创建符号链接权限。</li>
+                <li><strong className="text-slate-700">开启开发者模式：</strong>在系统设置中启用后，任何程序无需管理员权限即可创建符号链接。</li>
+              </ol>
+            </div>
+
+            <div className="flex flex-col gap-2 pt-2">
+              <button
+                type="button"
+                disabled={isElevating}
+                onClick={handleRestartAsAdmin}
+                className="w-full py-2.5 px-4 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 disabled:opacity-60 rounded-xl shadow-xs transition-colors flex items-center justify-center gap-1.5"
+              >
+                {isElevating ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5" />}
+                <span>{isElevating ? '正在请求提权...' : '以管理员身份重启并切换'}</span>
+              </button>
+              <div className="flex items-center justify-between gap-2">
+                <button
+                  type="button"
+                  onClick={handleOpenDeveloperSettings}
+                  className="flex-1 py-2 px-3 text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-xl transition-colors border border-slate-200"
+                >
+                  前往开启开发者模式
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowAdminConfirm(false)}
+                  className="py-2 px-4 text-xs font-semibold text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded-xl transition-colors"
+                >
+                  取消（保持文件复制）
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

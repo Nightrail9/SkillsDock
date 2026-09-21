@@ -53,9 +53,9 @@ export const InstallModal: React.FC<InstallModalProps> = ({
   const [selectedTools, setSelectedTools] = useState<Record<ToolId, boolean>>(() =>
     Object.fromEntries(tools.filter((t) => t.isEnabled).map((t) => [t.id, true])),
   );
-  // 部署方式默认值取自全局设置，设置未就绪时回落 symlink
+  // 部署方式默认值取自全局设置，设置未就绪时回落 copy
   const [deployMethod, setDeployMethod] = useState<'symlink' | 'copy'>(
-    () => appState?.settings?.distributionMethod ?? 'symlink',
+    () => appState?.settings?.distributionMethod ?? 'copy',
   );
 
   // 安装失败时回到配置页以便调整重试

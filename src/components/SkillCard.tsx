@@ -12,6 +12,7 @@ import {
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { Skill, ToolAdapter, ToolId } from '../types';
 import { ToolBrandIcon } from './icons/BrandIcons';
+import { useTranslation } from '../hooks/useLocale';
 
 /** 来源渠道图标（替代原"查看详情"入口；详情改由点击技能名打开） */
 function SourceChannelIcon({ skill }: { skill: Skill }) {
@@ -77,6 +78,7 @@ const SkillCardComponent: React.FC<SkillCardProps> = ({
   isUpdating = false,
   isGeneratingDesc = false,
 }) => {
+  const { locale, t } = useTranslation();
   const enabledTools = tools.filter((t) => t.isEnabled);
   const deployedCount = enabledTools.filter((t) => !!skill.deployedTools[t.id]).length;
   const isProject = skill.scope === 'project';
@@ -168,11 +170,11 @@ const SkillCardComponent: React.FC<SkillCardProps> = ({
             <button
               onClick={() => onUpdateSingle(skill)}
               disabled={isUpdating}
-              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-500 hover:bg-amber-600 active:bg-amber-700 text-white transition-colors shadow-xs"
-              title="一键更新至远程最新提交"
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-500 hover:bg-amber-600 active:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors shadow-xs"
+              title={isUpdating ? '正在更新中...' : '一键更新至远程最新提交'}
             >
               <RefreshCw className={`w-3 h-3 ${isUpdating ? 'animate-spin' : ''}`} />
-              <span>更新</span>
+              <span>{isUpdating ? '更新中' : '更新'}</span>
             </button>
           )}
 
@@ -242,21 +244,25 @@ const SkillCardComponent: React.FC<SkillCardProps> = ({
       )}
 
       {/* Target Tools Distribution Matrix & Sync Indicator */}
-      <div className="pt-3 border-t border-slate-100 flex items-center justify-between flex-wrap gap-2 pl-7">
+      <div data-no-translate className="pt-3 border-t border-slate-100 flex items-center justify-between flex-wrap gap-2 pl-7">
         <div className="flex items-center gap-2 text-[11px] text-slate-500">
           <Layers className="w-3.5 h-3.5 text-slate-400" />
-          <span>分发状态:</span>
+          <span>{t('分发状态:', 'Distribution:')}</span>
           <span className="font-semibold text-slate-700">
             {isProject
-              ? `项目内 ${deployedCount} / ${enabledTools.length} 工具已分发`
-              : `${deployedCount} / ${enabledTools.length} 工具已启用`}
+              ? locale === 'en'
+                ? `Project: ${deployedCount} / ${enabledTools.length} tools distributed`
+                : `项目内 ${deployedCount} / ${enabledTools.length} 工具已分发`
+              : locale === 'en'
+                ? `${deployedCount} / ${enabledTools.length} tools enabled`
+                : `${deployedCount} / ${enabledTools.length} 工具已启用`}
           </span>
         </div>
 
         {/* Model Tools Quick Toggle Badges with Official Logos and active indicators */}
         <div className="flex items-center gap-2 flex-wrap">
           {enabledTools.length === 0 ? (
-            <span className="text-[11px] text-slate-400 italic">暂无启用的 AI 工具</span>
+            <span className="text-[11px] text-slate-400 italic">{t('暂无启用的 AI 工具', 'No enabled AI tools')}</span>
           ) : (
             enabledTools.map((tool) => {
               const isDeployed = !!skill.deployedTools[tool.id];

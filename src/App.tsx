@@ -62,6 +62,7 @@ export default function App() {
   const tools = useMemo(() => appState?.tools ?? [], [appState]);
   const projects = useMemo(() => appState?.projects ?? [], [appState]);
   const appSettings = appState?.settings ?? null;
+  const t = (zh: string, en: string) => (appSettings?.locale === 'en' ? en : zh);
 
   useTheme(appSettings?.theme || 'light');
 
@@ -409,6 +410,7 @@ export default function App() {
 
   // Update single skill
   const handleUpdateSingle = useCallback((skill: Skill) => {
+    if (bulkUpdateMutation.isPending || updatingSkillIds.has(skill.id)) return;
     setUpdatingSkillIds((prev) => new Set(prev).add(skill.id));
     updateSkillMutation.mutate(skill.id, {
       onSuccess: (updated) => {
@@ -429,11 +431,12 @@ export default function App() {
         });
       },
     });
-  }, [updateSkillMutation, addToast]);
+  }, [bulkUpdateMutation.isPending, updatingSkillIds, updateSkillMutation, addToast]);
 
   // 批量更新（串行），供「全部更新」与「批量更新选中」共用
   const runBulkUpdate = (ids: string[]) => {
-    if (ids.length === 0) return;
+    if (ids.length === 0 || bulkUpdateMutation.isPending) return;
+    setUpdatingSkillIds((prev) => new Set([...prev, ...ids]));
     bulkUpdateMutation.mutate(ids, {
       onSuccess: (result) => {
         if (result.failed.length === 0) {
@@ -446,10 +449,21 @@ export default function App() {
           );
         }
       },
+      onError: (err) => {
+        addToast('error', '批量更新失败', errorToString(err));
+      },
+      onSettled: () => {
+        setUpdatingSkillIds((prev) => {
+          const next = new Set(prev);
+          ids.forEach((id) => next.delete(id));
+          return next;
+        });
+      },
     });
   };
 
   const handleUpdateAll = () => {
+    if (bulkUpdateMutation.isPending) return;
     runBulkUpdate(skills.filter((s) => s.hasUpdate).map((s) => s.id));
   };
 
@@ -691,6 +705,7 @@ export default function App() {
         totalSkillsCount={skills.length}
         updateAvailableCount={updateAvailableCount}
         projectsCount={projects.length}
+        locale={settings.locale}
         currentTab={currentTab}
         onSelectTab={(tab) => {
           setCurrentTab(tab);
@@ -703,12 +718,13 @@ export default function App() {
         {/* TAB 1: Installed Skills Management (with Left Filter Sidebar) */}
         <div className={`flex-1 overflow-hidden ${currentTab === 'installed' ? 'flex' : 'hidden'}`}>
           <Sidebar
+            locale={settings.locale}
             selectedScope={selectedScope}
             onSelectScope={setSelectedScope}
             projectList={projects.map((p) => ({
               id: p.id,
               name: p.name,
-              count: skills.filter((s) => s.projectId === p.id).length,
+              count: p.skillCount,
             }))}
             globalCount={skills.filter((s) => s.scope === 'global').length}
             totalCount={skills.length}
@@ -725,13 +741,13 @@ export default function App() {
           {/* Right Skills Main Content */}
           <main className="flex-1 flex flex-col min-w-0 bg-[#FBFBFC] overflow-hidden">
             {/* Action Toolbar（与左侧栏头部同高，保证底部横线对齐） */}
-            <div className="h-[61px] px-6 bg-white/95 backdrop-blur-xs border-b border-slate-200/80 flex items-center justify-between gap-4 flex-wrap">
+            <div data-no-translate className="h-[61px] px-6 bg-white/95 backdrop-blur-xs border-b border-slate-200/80 flex items-center justify-between gap-4 flex-wrap">
               <div className="flex items-center gap-3 flex-1 min-w-[280px]">
                 <div className="relative flex-1 max-w-sm">
                   <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
                   <input
                     type="text"
-                    placeholder="搜索技能名称、描述、标签或仓库..."
+                    placeholder={t('搜索技能名称、描述、标签或仓库...', 'Search skills, descriptions, tags, or repositories...')}
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                     className="w-full pl-9 pr-7 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-hidden focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-colors placeholder:text-slate-400 shadow-2xs"
@@ -757,10 +773,14 @@ export default function App() {
                       ? 'border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100'
                       : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50 shadow-2xs'
                   }`}
-                  title="一键检查所有技能的远端 Git 提交与版本更新"
+                  title={t('一键检查所有技能的远端 Git 提交与版本更新', 'Check remote Git commits and updates for every skill')}
                 >
                   <RotateCw className={`w-4 h-4 ${checkUpdatesMutation.isPending ? 'animate-spin text-indigo-600' : 'text-slate-500'}`} />
-                  <span>{checkUpdatesMutation.isPending ? '检测中...' : updateAvailableCount > 0 ? `有 ${updateAvailableCount} 项待更新` : '检查更新'}</span>
+                  <span>{checkUpdatesMutation.isPending
+                    ? t('检测中...', 'Checking...')
+                    : updateAvailableCount > 0
+                      ? t(`有 ${updateAvailableCount} 项待更新`, `${updateAvailableCount} updates available`)
+                      : t('检查更新', 'Check for updates')}</span>
                 </button>
 
                 {updateAvailableCount > 0 && (
@@ -768,20 +788,24 @@ export default function App() {
                     onClick={handleUpdateAll}
                     disabled={bulkUpdateMutation.isPending}
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 active:bg-amber-700 disabled:opacity-60 text-white text-sm font-semibold shadow-xs transition-colors"
-                    title="一键将所有有更新的技能更新至远程最新提交"
-                  >
-                    <RotateCw className={`w-4 h-4 ${bulkUpdateMutation.isPending ? 'animate-spin' : ''}`} />
-                    <span>全部更新 ({updateAvailableCount})</span>
-                  </button>
+                  title={t('一键将所有有更新的技能更新至远程最新提交', 'Update every skill with an available remote update')}
+                >
+                  <RotateCw className={`w-4 h-4 ${bulkUpdateMutation.isPending ? 'animate-spin' : ''}`} />
+                  <span>{t(`全部更新 (${updateAvailableCount})`, `Update all (${updateAvailableCount})`)}</span>
+                </button>
                 )}
 
                 <span className="h-4 w-px bg-slate-200 mx-1" />
 
                 <span className="text-sm text-slate-500">
-                  显示 <strong className="text-slate-800">{filteredSkills.length}</strong> / {skills.length} 项
+                  {appSettings?.locale === 'en' ? (
+                    <>Showing <strong className="text-slate-800">{filteredSkills.length}</strong> / {skills.length}</>
+                  ) : (
+                    <>显示 <strong className="text-slate-800">{filteredSkills.length}</strong> / {skills.length} 项</>
+                  )}
                   {selectedSkillIds.size > 0 && (
                     <span className="ml-1 text-indigo-600 font-medium">
-                      (已选 {selectedSkillIds.size})
+                      {appSettings?.locale === 'en' ? `(Selected ${selectedSkillIds.size})` : `(已选 ${selectedSkillIds.size})`}
                     </span>
                   )}
                 </span>
@@ -790,9 +814,9 @@ export default function App() {
                   <button
                     onClick={handleClearSelection}
                     className="text-sm text-slate-500 hover:text-slate-700 font-medium px-2 py-1 rounded-lg hover:bg-slate-100 transition-colors"
-                    title="清除所有已选项目"
+                    title={t('清除所有已选项目', 'Clear all selected skills')}
                   >
-                    清除选择
+                    {t('清除选择', 'Clear selection')}
                   </button>
                 )}
 
@@ -804,9 +828,11 @@ export default function App() {
                         ? 'text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-200/80 font-semibold'
                         : 'text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50 border border-indigo-200/60'
                     }`}
-                    title={isAllFilteredSelected ? '取消当前列表中的所有选中' : '全选当前列表中的所有技能'}
+                    title={isAllFilteredSelected
+                      ? t('取消当前列表中的所有选中', 'Clear all selections in this list')
+                      : t('全选当前列表中的所有技能', 'Select every skill in this list')}
                   >
-                    {isAllFilteredSelected ? '取消全选' : '全选当前'}
+                    {isAllFilteredSelected ? t('取消全选', 'Clear selection') : t('全选当前', 'Select all')}
                   </button>
                 )}
               </div>
@@ -858,7 +884,7 @@ export default function App() {
                       onOpenTagEdit={handleOpenTagEdit}
                       onUninstallSingle={handleUninstallSingle}
                       onGenerateDescSingle={handleGenerateSingleDescription}
-                      isUpdating={updatingSkillIds.has(skill.id)}
+                      isUpdating={updatingSkillIds.has(skill.id) || (skill.hasUpdate && bulkUpdateMutation.isPending)}
                       isGeneratingDesc={generatingDescSkillIds.has(skill.id)}
                     />
                   ))}

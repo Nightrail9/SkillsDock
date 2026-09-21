@@ -8,7 +8,7 @@ import {
   RotateCcw,
   Layers
 } from 'lucide-react';
-import { ScopeType } from '../types';
+import { AppLocale, ScopeType } from '../types';
 
 interface InstalledFilterSidebarProps {
   selectedScope: 'all' | ScopeType | string; // 'all' | 'global' | projectId
@@ -21,6 +21,7 @@ interface InstalledFilterSidebarProps {
   onToggleTag: (tag: string) => void;
   onClearTags: () => void;
   onOpenRegisterProject: () => void;
+  locale?: AppLocale;
 }
 
 export const Sidebar: React.FC<InstalledFilterSidebarProps> = ({
@@ -34,7 +35,9 @@ export const Sidebar: React.FC<InstalledFilterSidebarProps> = ({
   onToggleTag,
   onClearTags,
   onOpenRegisterProject,
+  locale = 'zh',
 }) => {
+  const isEnglish = locale === 'en';
   const hasActiveFilters = selectedScope !== 'all' || selectedTags.length > 0;
 
   return (
@@ -45,7 +48,7 @@ export const Sidebar: React.FC<InstalledFilterSidebarProps> = ({
           <div className="w-5 h-5 rounded-md bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-600">
             <Filter className="w-3 h-3" />
           </div>
-          <span>多维筛选</span>
+          <span>{isEnglish ? 'Filters' : '多维筛选'}</span>
         </div>
 
         {hasActiveFilters && (
@@ -58,7 +61,7 @@ export const Sidebar: React.FC<InstalledFilterSidebarProps> = ({
             title="一键重置所有作用域与标签筛选"
           >
             <RotateCcw className="w-2.5 h-2.5" />
-            <span>重置</span>
+            <span>{isEnglish ? 'Reset' : '重置'}</span>
           </button>
         )}
       </div>
@@ -67,14 +70,14 @@ export const Sidebar: React.FC<InstalledFilterSidebarProps> = ({
         {/* Section 1: Scope & Projects */}
         <div className="space-y-1.5">
           <div className="flex items-center justify-between px-2 text-xs font-semibold tracking-wider text-slate-400 uppercase">
-            <span>生效范围</span>
+            <span>{isEnglish ? 'Scope' : '生效范围'}</span>
             <button
               onClick={onOpenRegisterProject}
               className="text-xs text-indigo-600 hover:text-indigo-800 font-medium normal-case flex items-center gap-0.5 hover:underline"
               title="新建并关联本地工程目录"
             >
               <Plus className="w-3 h-3" />
-              <span>新建项目</span>
+              <span>{isEnglish ? 'New project' : '新建项目'}</span>
             </button>
           </div>
 
@@ -90,7 +93,7 @@ export const Sidebar: React.FC<InstalledFilterSidebarProps> = ({
             >
               <div className="flex items-center gap-2.5">
                 <Layers className={`w-3.5 h-3.5 ${selectedScope === 'all' ? 'text-indigo-600' : 'text-slate-400'}`} />
-                <span>全部技能</span>
+                <span>{isEnglish ? 'All skills' : '全部技能'}</span>
               </div>
               <span className={`text-[11px] px-2 py-0.5 rounded-full font-mono font-medium ${
                 selectedScope === 'all' ? 'bg-indigo-50 text-indigo-700' : 'bg-slate-200/60 text-slate-500'
@@ -110,7 +113,7 @@ export const Sidebar: React.FC<InstalledFilterSidebarProps> = ({
             >
               <div className="flex items-center gap-2.5">
                 <Globe className={`w-3.5 h-3.5 ${selectedScope === 'global' ? 'text-indigo-600' : 'text-slate-400'}`} />
-                <span>全局可用</span>
+                <span>{isEnglish ? 'Global' : '全局可用'}</span>
               </div>
               <span className={`text-[11px] px-2 py-0.5 rounded-full font-mono font-medium ${
                 selectedScope === 'global' ? 'bg-indigo-50 text-indigo-700' : 'bg-slate-200/60 text-slate-500'
@@ -123,7 +126,7 @@ export const Sidebar: React.FC<InstalledFilterSidebarProps> = ({
             {projectList.length > 0 && (
               <div className="pt-2">
                 <div className="px-2 pb-1 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
-                  项目专属技能
+                  {isEnglish ? 'Project skills' : '项目专属技能'}
                 </div>
                 {projectList.map((project) => {
                   const isSelected = selectedScope === project.id;
@@ -160,21 +163,21 @@ export const Sidebar: React.FC<InstalledFilterSidebarProps> = ({
           <div className="flex items-center justify-between px-2 text-xs font-semibold tracking-wider text-slate-400 uppercase">
             <span className="flex items-center gap-1.5">
               <TagIcon className="w-3.5 h-3.5" />
-              <span>技能标签</span>
+              <span>{isEnglish ? 'Skill tags' : '技能标签'}</span>
             </span>
             {selectedTags.length > 0 && (
               <button
                 onClick={onClearTags}
                 className="text-xs text-indigo-600 hover:text-indigo-800 font-medium normal-case hover:underline focus:outline-none focus-visible:outline-none focus:ring-0"
               >
-                清除 ({selectedTags.length})
+                {isEnglish ? 'Clear' : '清除'} ({selectedTags.length})
               </button>
             )}
           </div>
 
           <div className="flex flex-wrap gap-1.5 px-1 max-h-[260px] overflow-y-auto">
             {allTags.length === 0 ? (
-              <span className="text-xs text-slate-400 italic px-1">暂无标签</span>
+              <span className="text-xs text-slate-400 italic px-1">{isEnglish ? 'No tags' : '暂无标签'}</span>
             ) : (
               allTags.map((t) => {
                 const isSelected = selectedTags.includes(t.name);
