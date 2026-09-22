@@ -39,8 +39,28 @@ npm run build
 # 后端测试
 cd src-tauri && cargo test
 
-# 编译发布版安装包（Windows: NSIS + MSI，产物在 src-tauri/target/release/bundle/）
-npm run tauri:build
+# 编译发布版安装包
+# 产物按平台输出到 src-tauri/target/release/bundle/（指定 --target 时在 src-tauri/target/<triple>/ ）
+npm run tauri:build                 # 按宿主机平台构建 tauri.conf.json 中 targets 的对应子集
+
+# Windows 本机（NSIS + MSI + 绿色便携 zip）
+npm run tauri:build -- --bundles nsis,msi
+
+# Linux（Debian/Ubuntu/Fedora 等，x86_64 + aarch64 的 deb/rpm/AppImage）
+# 方式一：Docker（跨平台、环境隔离；Docker 配置文件见 src-tauri/docker/）
+docker build -t skilldock-linux-builder src-tauri/docker
+docker run --rm -v "$(pwd):/work" skilldock-linux-builder amd64
+docker run --rm -v "$(pwd):/work" skilldock-linux-builder aarch64
+
+# 方式二：WSL2 Ubuntu（网络访问 Docker Hub 受限时使用，需先安装依赖：
+# libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+# libssl-dev patchelf xdg-utils rpm gcc-aarch64-linux-gnu，以及 Node 与 Rust 工具链）
+CARGO_TARGET_DIR=~/target-linux src-tauri/docker/build.sh amd64
+CARGO_TARGET_DIR=~/target-linux src-tauri/docker/build.sh aarch64   # aarch64 需先移除 amd64 版 dev 包
+# 产物汇总到 dist-release/linux/{x86_64,aarch64}/
+
+# macOS（dmg / app.tar.gz，Intel + Apple Silicon）
+# 本仓库不含 macOS 打包机，由 GitHub Actions 在 push v* 标签时自动构建，见 .github/workflows/release-macos.yml
 ```
 
 ## 数据位置

@@ -3,7 +3,9 @@ build/
 dist/
 coverage/
 src-tauri/target/
+src-tauri/target-linux/
 src-tauri/gen/
+dist-release/
 .DS_Store
 *.log
 .env*
