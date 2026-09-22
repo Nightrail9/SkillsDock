@@ -9,14 +9,18 @@ import {
   Link2,
   PackageCheck,
   AlertCircle,
+  Radar,
+  Loader2,
 } from 'lucide-react';
 import {
   DiscoverySkillItem,
+  ProbedRepoSkill,
+  RepoSkillProbe,
   Skill,
   AddToastFn,
   ShareSkillEntry,
 } from '../types';
-import { useSkillsShSearch } from '../hooks/useDiscovery';
+import { useSkillsShSearch, useProbeRepoSkills } from '../hooks/useDiscovery';
 import { useParseShareLink } from '../hooks/useSkills';
 import { useAddSkillRepo } from '../hooks/useRepos';
 import { errorToString } from '../lib/errors/skillErrorParser';
@@ -24,6 +28,7 @@ import { errorToString } from '../lib/errors/skillErrorParser';
 interface DiscoveryViewProps {
   installedSkills: Skill[];
   onSelectInstall: (item: DiscoverySkillItem) => void;
+  onBatchInstall?: (items: DiscoverySkillItem[]) => void;
   addToast: AddToastFn;
 }
 
@@ -47,6 +52,7 @@ function baseName(p: string): string {
 export const DiscoveryView: React.FC<DiscoveryViewProps> = ({
   installedSkills,
   onSelectInstall,
+  onBatchInstall,
   addToast,
 }) => {
   const [mainMode, setMainMode] = useState<'market' | 'github' | 'share'>('market');
@@ -55,7 +61,10 @@ export const DiscoveryView: React.FC<DiscoveryViewProps> = ({
   // Custom GitHub Source Form
   const [customRepo, setCustomRepo] = useState('');
   const [customBranch, setCustomBranch] = useState('main');
-  const [customSubpath, setCustomSubpath] = useState('skills');
+  const [customSubpath, setCustomSubpath] = useState('');
+  // 仓库探测结果（未填 subpath 时提交触发）
+  const [probedResult, setProbedResult] = useState<RepoSkillProbe | null>(null);
+  const [probedRepo, setProbedRepo] = useState<{ owner: string; name: string } | null>(null);
 
   // Link Import State
   const [shareLinkInput, setShareLinkInput] = useState('');
@@ -68,6 +77,7 @@ export const DiscoveryView: React.FC<DiscoveryViewProps> = ({
 
   const addSkillRepoMutation = useAddSkillRepo();
   const parseShareLinkMutation = useParseShareLink();
+  const probeRepoMutation = useProbeRepoSkills();
 
   // 精确匹配键：registryId 或 "repo:directory"（小写）。
   // 纯本地无来源技能不参与社区结果的"已安装"标记，避免同名不同源误命中。
@@ -97,7 +107,7 @@ export const DiscoveryView: React.FC<DiscoveryViewProps> = ({
     ? (skillsShQuery.data?.skills ?? [])
     : [];
 
-  // ===== Git 仓库导入：注册仓库源并进入安装向导 =====
+  // ===== Git 仓库导入：注册仓库源；未指定子目录时先探测仓库内全部技能 =====
   const handleGitRepoSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const parsed = parseRepoInput(customRepo);
@@ -106,7 +116,7 @@ export const DiscoveryView: React.FC<DiscoveryViewProps> = ({
       return;
     }
     const branch = customBranch.trim() || 'main';
-    const subpath = customSubpath.trim();
+    const subpath = customSubpath.trim().replace(/^\/+|\/+$/g, '');
 
     // 注册为长期仓库源（失败不阻断安装流程，例如重复添加）
     addSkillRepoMutation.mutate(
@@ -117,26 +127,94 @@ export const DiscoveryView: React.FC<DiscoveryViewProps> = ({
       },
     );
 
-    const skillName = subpath ? baseName(subpath) : parsed.name;
-    onSelectInstall({
-      id: `github:${parsed.owner}/${parsed.name}/${subpath}`,
-      name: skillName,
-      displayName: `${skillName} (Git: ${parsed.owner}/${parsed.name})`,
-      description: `来自 Git 仓库 ${parsed.owner}/${parsed.name} 的技能包。`,
-      author: parsed.owner,
-      sourceType: 'github',
-      stars: 0,
-      downloads: '-',
-      repo: `${parsed.owner}/${parsed.name}`,
-      branch,
-      subpath: subpath || undefined,
-      tags: [],
-      latestCommit: branch,
-      verified: false,
-      isInstalled: installedRepoDirs.has(
-        `${parsed.owner}/${parsed.name}:${skillName}`.toLowerCase(),
-      ),
-    });
+    // 指定了子目录：直接进入该技能的安装向导（已知路径的单技能安装）
+    if (subpath) {
+      openGitHubInstall(parsed.owner, parsed.name, branch, {
+        name: baseName(subpath),
+        subpath,
+      });
+      return;
+    }
+
+    // 未指定子目录：探测仓库内含 SKILL.md 的全部技能，由用户按需选择
+    setProbedResult(null);
+    setProbedRepo({ owner: parsed.owner, name: parsed.name });
+    probeRepoMutation.mutate(
+      { owner: parsed.owner, name: parsed.name, branch },
+      {
+        onSuccess: (probe) => {
+          setProbedResult(probe);
+          // 单技能仓库直接进入安装向导，省一次点击
+          if (probe.skills.length === 1) {
+            openGitHubInstall(parsed.owner, parsed.name, probe.branch, probe.skills[0]);
+          }
+        },
+      },
+    );
+  };
+
+  /** 由探测/子目录结果构造 GitHub 来源条目 */
+  const buildGitHubDiscoveryItem = (
+    owner: string,
+    name: string,
+    branch: string,
+    skill: Pick<ProbedRepoSkill, 'name' | 'subpath'> &
+      Partial<Pick<ProbedRepoSkill, 'displayName' | 'description'>>,
+  ): DiscoverySkillItem => ({
+    id: `github:${owner}/${name}/${skill.subpath || skill.name}`,
+    name: skill.name,
+    displayName: skill.displayName || skill.name,
+    description:
+      skill.description || `来自 Git 仓库 ${owner}/${name} 的技能包。`,
+    author: owner,
+    sourceType: 'github',
+    stars: 0,
+    downloads: '-',
+    repo: `${owner}/${name}`,
+    branch,
+    subpath: skill.subpath || undefined,
+    tags: [],
+    latestCommit: branch,
+    verified: false,
+    isInstalled: installedRepoDirs.has(
+      `${owner}/${name}:${skill.name}`.toLowerCase(),
+    ),
+  });
+
+  /** 由探测/子目录结果构造 GitHub 来源条目并打开单技能安装向导 */
+  const openGitHubInstall = (
+    owner: string,
+    name: string,
+    branch: string,
+    skill: Pick<ProbedRepoSkill, 'name' | 'subpath'> &
+      Partial<Pick<ProbedRepoSkill, 'displayName' | 'description'>>,
+  ) => {
+    onSelectInstall(buildGitHubDiscoveryItem(owner, name, branch, skill));
+  };
+
+  /** 一键安装 GitHub 探测出的全部未安装技能 */
+  const handleInstallAllProbedSkills = () => {
+    if (!probedResult || !probedRepo || !onBatchInstall) return;
+    const uninstalledItems = probedResult.skills
+      .filter(
+        (skill) =>
+          !installedRepoDirs.has(
+            `${probedRepo.owner}/${probedRepo.name}:${skill.name}`.toLowerCase(),
+          ),
+      )
+      .map((skill) =>
+        buildGitHubDiscoveryItem(
+          probedRepo.owner,
+          probedRepo.name,
+          probedResult.branch,
+          skill,
+        ),
+      );
+    if (uninstalledItems.length === 0) {
+      addToast('info', '无需安装', '该仓库中所有技能均已安装。');
+      return;
+    }
+    onBatchInstall(uninstalledItems);
   };
 
   // ===== 分享链接导入：真实解析 =====
@@ -157,9 +235,10 @@ export const DiscoveryView: React.FC<DiscoveryViewProps> = ({
     });
   };
 
-  const handleInstallParsedSkill = (entry: ShareSkillEntry) => {
+  /** 将分享解析条目转换为统一发现条目 */
+  const buildShareDiscoveryItem = (entry: ShareSkillEntry): DiscoverySkillItem => {
     const name = entry.name;
-    onSelectInstall({
+    return {
       id: `share:${entry.sourceType}:${entry.repo ?? entry.registryId ?? name}`,
       name,
       displayName: entry.displayName || entry.name,
@@ -175,9 +254,61 @@ export const DiscoveryView: React.FC<DiscoveryViewProps> = ({
       tags: entry.tags ?? [],
       latestCommit: entry.branch ?? '',
       verified: false,
-      isInstalled: isItemInstalled({ id: entry.registryId ?? '', name, repo: entry.repo, registryId: entry.registryId }),
-    });
+      isInstalled: isItemInstalled({
+        id: entry.registryId ?? '',
+        name,
+        repo: entry.repo,
+        registryId: entry.registryId,
+      }),
+    };
   };
+
+  const handleInstallParsedSkill = (entry: ShareSkillEntry) => {
+    onSelectInstall(buildShareDiscoveryItem(entry));
+  };
+
+  /** 一键安装分享链接解析出的全部未安装技能 */
+  const handleInstallAllShareSkills = () => {
+    if (!parsedLinkSkills || !onBatchInstall) return;
+    const uninstalledItems = parsedLinkSkills
+      .filter(
+        (entry) =>
+          !isItemInstalled({
+            id: entry.registryId ?? '',
+            name: entry.name,
+            repo: entry.repo,
+            registryId: entry.registryId,
+          }),
+      )
+      .map(buildShareDiscoveryItem);
+    if (uninstalledItems.length === 0) {
+      addToast('info', '无需安装', '分享链接中的所有技能均已安装。');
+      return;
+    }
+    onBatchInstall(uninstalledItems);
+  };
+
+  const uninstalledProbedSkills =
+    probedResult && probedRepo
+      ? probedResult.skills.filter(
+          (skill) =>
+            !installedRepoDirs.has(
+              `${probedRepo.owner}/${probedRepo.name}:${skill.name}`.toLowerCase(),
+            ),
+        )
+      : [];
+
+  const uninstalledShareSkills = parsedLinkSkills
+    ? parsedLinkSkills.filter(
+        (entry) =>
+          !isItemInstalled({
+            id: entry.registryId ?? '',
+            name: entry.name,
+            repo: entry.repo,
+            registryId: entry.registryId,
+          }),
+      )
+    : [];
 
   return (
     <div className="flex-1 overflow-y-auto p-8 space-y-6">
@@ -197,7 +328,7 @@ export const DiscoveryView: React.FC<DiscoveryViewProps> = ({
         ) : (
           <div className="text-xs font-medium text-slate-500">
             {mainMode === 'github'
-              ? '从 GitHub 仓库克隆技能定义至技能仓库'
+              ? '输入 GitHub 仓库链接，自动探测仓库内全部技能并按需安装'
               : '解析他人分享的技能链接 / Bundle 清单，批量纳管至技能仓库'}
           </div>
         )}
@@ -340,7 +471,7 @@ export const DiscoveryView: React.FC<DiscoveryViewProps> = ({
         </div>
       )}
 
-      {/* MODE 2: Github 仓库导入（含 URL 直链安装） */}
+      {/* MODE 2: Github 仓库导入（自动探测仓库内全部技能 + 指定子目录直装） */}
       {mainMode === 'github' && (
         <div className="max-w-3xl mx-auto space-y-6">
           {/* Git 仓库导入 */}
@@ -351,7 +482,7 @@ export const DiscoveryView: React.FC<DiscoveryViewProps> = ({
                   <span>添加自定义 Git 技能源</span>
                 </h2>
                 <p className="text-xs text-slate-500 mt-1">
-                  填写任意公开或私有 Git 仓库，系统将克隆技能定义文件至技能仓库并支持自动更新检测。
+                  填写任意公开或私有 Git 仓库，系统将自动探测仓库内包含 SKILL.md 的全部技能并支持自动更新检测。
                 </p>
               </div>
 
@@ -363,9 +494,14 @@ export const DiscoveryView: React.FC<DiscoveryViewProps> = ({
                   <input
                     type="text"
                     required
-                    placeholder="例如: anthropics/skills-kit 或 https://github.com/my-org/agent-tools"
+                    placeholder="例如: anthropics/skills 或 https://github.com/my-org/agent-tools"
                     value={customRepo}
-                    onChange={(e) => setCustomRepo(e.target.value)}
+                    onChange={(e) => {
+                      setCustomRepo(e.target.value);
+                      // 仓库地址变化后上一次探测结果失效
+                      setProbedResult(null);
+                      setProbedRepo(null);
+                    }}
                     className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-xs transition-all font-mono"
                   />
                 </div>
@@ -376,17 +512,23 @@ export const DiscoveryView: React.FC<DiscoveryViewProps> = ({
                     <input
                       type="text"
                       value={customBranch}
-                      onChange={(e) => setCustomBranch(e.target.value)}
+                      onChange={(e) => {
+                        setCustomBranch(e.target.value);
+                        // 分支变化后上一次探测结果失效
+                        setProbedResult(null);
+                        setProbedRepo(null);
+                      }}
                       className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl focus:bg-white text-xs font-mono"
                     />
                   </div>
                   <div>
-                    <label className="block font-semibold text-slate-700 mb-1.5">技能所在子目录 (Subpath)</label>
+                    <label className="block font-semibold text-slate-700 mb-1.5">技能子目录 (可选)</label>
                     <input
                       type="text"
+                      placeholder="留空自动探测整个仓库，如: skills/pdf"
                       value={customSubpath}
                       onChange={(e) => setCustomSubpath(e.target.value)}
-                      className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl focus:bg-white text-xs font-mono"
+                      className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl focus:bg-white text-xs font-mono placeholder:text-slate-400"
                     />
                   </div>
                 </div>
@@ -394,13 +536,112 @@ export const DiscoveryView: React.FC<DiscoveryViewProps> = ({
                 <div className="pt-2 flex justify-end">
                   <button
                     type="submit"
-                    className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-xl shadow-xs transition-colors flex items-center gap-2"
+                    disabled={probeRepoMutation.isPending}
+                    className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white font-semibold rounded-xl shadow-xs transition-colors flex items-center gap-2"
                   >
-                    <Download className="w-4 h-4" />
-                    <span>安装</span>
+                    {probeRepoMutation.isPending ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>正在探测仓库技能...</span>
+                      </>
+                    ) : customSubpath.trim() ? (
+                      <>
+                        <Download className="w-4 h-4" />
+                        <span>安装</span>
+                      </>
+                    ) : (
+                      <>
+                        <Radar className="w-4 h-4" />
+                        <span>探测仓库技能</span>
+                      </>
+                    )}
                   </button>
                 </div>
               </form>
+
+              {/* 探测结果：仓库内全部可安装技能清单 */}
+              {probeRepoMutation.isError && (
+                <div className="p-3.5 rounded-2xl border text-xs flex items-start gap-2.5 bg-rose-50 border-rose-200/80 text-rose-800 whitespace-pre-wrap">
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span>仓库探测失败：{errorToString(probeRepoMutation.error)}</span>
+                </div>
+              )}
+
+              {probedResult && probedRepo && !probeRepoMutation.isPending && (
+                probedResult.skills.length === 0 ? (
+                  <div className="p-4 rounded-2xl border border-dashed border-slate-300 bg-slate-50 text-xs text-slate-500 text-center">
+                    未在 {probedRepo.owner}/{probedRepo.name}（分支 {probedResult.branch}）中找到包含 SKILL.md 的技能目录，
+                    请确认仓库内容或改用上方「技能子目录」直接指定安装路径。
+                  </div>
+                ) : (
+                  <div className="space-y-2.5">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-1">
+                      <div className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+                        <PackageCheck className="w-4 h-4 text-emerald-600" />
+                        <span>
+                          在 {probedRepo.owner}/{probedRepo.name}（分支 {probedResult.branch}）中发现 {probedResult.skills.length} 个技能
+                          {uninstalledProbedSkills.length > 0
+                            ? `（其中 ${uninstalledProbedSkills.length} 个未安装）`
+                            : '（全部已安装）'}
+                        </span>
+                      </div>
+                      {uninstalledProbedSkills.length > 0 && onBatchInstall && (
+                        <button
+                          type="button"
+                          onClick={handleInstallAllProbedSkills}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white rounded-xl text-xs font-semibold shadow-xs transition-colors shrink-0"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                          <span>一键安装所有技能 ({uninstalledProbedSkills.length})</span>
+                        </button>
+                      )}
+                    </div>
+                    {probedResult.skills.map((skill) => {
+                      const alreadyInstalled = installedRepoDirs.has(
+                        `${probedRepo.owner}/${probedRepo.name}:${skill.name}`.toLowerCase(),
+                      );
+                      return (
+                        <div
+                          key={skill.subpath || skill.name}
+                          className="p-3.5 bg-slate-50 rounded-xl border border-slate-200/80 flex items-center justify-between gap-3"
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="text-xs font-bold text-slate-800 truncate">
+                              {skill.displayName || skill.name}
+                            </div>
+                            <div className="text-[11px] text-slate-500 line-clamp-2">
+                              {skill.description || ''}
+                            </div>
+                            <div className="text-[10px] text-slate-400 font-mono mt-0.5 truncate">
+                              {skill.subpath || '（仓库根目录）'}
+                            </div>
+                          </div>
+                          {alreadyInstalled ? (
+                            <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200 shrink-0">
+                              <Check className="w-3 h-3" />
+                              <span>已安装</span>
+                            </span>
+                          ) : (
+                            <button
+                              onClick={() =>
+                                openGitHubInstall(
+                                  probedRepo.owner,
+                                  probedRepo.name,
+                                  probedResult.branch,
+                                  skill,
+                                )
+                              }
+                              className="px-3 py-1.5 rounded-lg text-[11px] font-semibold text-white bg-indigo-600 hover:bg-indigo-700 transition-colors shrink-0"
+                            >
+                              安装
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )
+              )}
             </div>
         </div>
       )}
@@ -466,9 +707,26 @@ export const DiscoveryView: React.FC<DiscoveryViewProps> = ({
               {/* 解析结果清单 */}
               {parsedLinkSkills && parsedLinkSkills.length > 0 && (
                 <div className="space-y-2.5">
-                  <div className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
-                    <PackageCheck className="w-4 h-4 text-emerald-600" />
-                    <span>解析出 {parsedLinkSkills.length} 个技能，逐个进入安装向导：</span>
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-1">
+                    <div className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+                      <PackageCheck className="w-4 h-4 text-emerald-600" />
+                      <span>
+                        解析出 {parsedLinkSkills.length} 个技能
+                        {uninstalledShareSkills.length > 0
+                          ? `（其中 ${uninstalledShareSkills.length} 个未安装）`
+                          : '（全部已安装）'}
+                      </span>
+                    </div>
+                    {uninstalledShareSkills.length > 0 && onBatchInstall && (
+                      <button
+                        type="button"
+                        onClick={handleInstallAllShareSkills}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white rounded-xl text-xs font-semibold shadow-xs transition-colors shrink-0"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        <span>一键安装所有技能 ({uninstalledShareSkills.length})</span>
+                      </button>
+                    )}
                   </div>
                   {parsedLinkSkills.map((entry) => {
                     const name = entry.name;

@@ -10,11 +10,11 @@ use tauri::State;
 use crate::config;
 use crate::services::share::SharePayload;
 use crate::services::skill_service::{self, SkillService};
-use crate::services::{llm_service::LlmService, registry, share};
+use crate::services::{github, llm_service::LlmService, registry, share};
 use crate::types::{
     AppSettings, AppStateSnapshot, DescriptionProcessingResult, ImportSkillSelection, InstallSkillInput,
     LlmConfig, LlmConfigInput, LlmConnectionTest, MigrationResult, ProjectPathStatus, ProjectScope,
-    Skill, SkillRepo, SkillUpdateInfo, SkillsShSearchResult, ToolAdapter, ToolAdapterInput,
+    RepoSkillProbe, Skill, SkillRepo, SkillUpdateInfo, SkillsShSearchResult, ToolAdapter, ToolAdapterInput,
     ToolPathValidation, UnmanagedSkill,
 };
 use crate::AppState;
@@ -132,6 +132,18 @@ pub async fn install_skill_unified(
     Ok(SkillService::record_to_skill(
         &state.db, &record, &tools, &projects, false,
     ))
+}
+
+/// 探测 GitHub 仓库内全部可安装技能（网络命令；指定分支无效时回退 main / master）
+#[tauri::command]
+pub async fn probe_repo_skills(
+    owner: String,
+    name: String,
+    branch: String,
+) -> CmdResult<RepoSkillProbe> {
+    github::probe_repo_skills(&owner, &name, &branch)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 // ========== 分享 ==========

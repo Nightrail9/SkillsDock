@@ -9,25 +9,21 @@ import {
   X,
 } from 'lucide-react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { AppLocale, ToolAdapter, MainNavTab } from '../types';
+import { AppLocale, MainNavTab } from '../types';
 import { SkillDockLogo } from './icons/BrandIcons';
 import { isTauriEnvironment } from '../lib/api/mockData';
 
 interface HeaderBarProps {
-  tools: ToolAdapter[];
   totalSkillsCount: number;
   updateAvailableCount: number;
-  projectsCount: number;
   locale?: AppLocale;
   currentTab: MainNavTab;
   onSelectTab: (tab: MainNavTab) => void;
 }
 
 export const HeaderBar: React.FC<HeaderBarProps> = ({
-  tools,
   totalSkillsCount,
   updateAvailableCount,
-  projectsCount,
   locale = 'zh',
   currentTab,
   onSelectTab,

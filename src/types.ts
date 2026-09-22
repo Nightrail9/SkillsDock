@@ -186,6 +186,23 @@ export interface SkillsShSearchResult {
   totalCount: number;
 }
 
+/** 仓库技能探测结果条目（probe_repo_skills） */
+export interface ProbedRepoSkill {
+  /** 技能目录名（安装名；仓库根级技能为仓库名） */
+  name: string;
+  displayName?: string;
+  description?: string;
+  /** 仓库内相对目录（根级技能为 ''） */
+  subpath: string;
+}
+
+/** 仓库技能探测结果（probe_repo_skills） */
+export interface RepoSkillProbe {
+  /** 实际命中的分支（请求分支无效时回退 main / master） */
+  branch: string;
+  skills: ProbedRepoSkill[];
+}
+
 /** 统一安装请求（install_skill_unified 的公共部分） */
 export interface InstallRequest {
   scope: ScopeType;

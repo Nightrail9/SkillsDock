@@ -8,5 +8,3 @@ src-tauri/gen/
 *.log
 .env*
 !.env.example
-src-tauri/icons/skilldock-candidate-*
-src-tauri/icons/skilldock-icon-concept-*

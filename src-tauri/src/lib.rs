@@ -47,6 +47,7 @@ pub fn run() {
             commands::search_skills_sh,
             commands::backfill_skill_sources,
             commands::install_skill_unified,
+            commands::probe_repo_skills,
             commands::create_share_link,
             commands::parse_share_link,
             commands::toggle_skill_tool,

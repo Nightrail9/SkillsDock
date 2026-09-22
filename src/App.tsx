@@ -17,8 +17,6 @@ import {
   MainNavTab,
   ToolId,
   DiscoverySkillItem,
-  SkillDeployMethod,
-  AddToastFn,
   AppSettings,
   AppState,
 } from './types';
@@ -195,7 +193,13 @@ export default function App() {
   const [selectedSkillIds, setSelectedSkillIds] = useState<Set<string>>(new Set());
 
   // Modal Dialog States
-  const [installItem, setInstallItem] = useState<DiscoverySkillItem | null>(null);
+  const [installItems, setInstallItems] = useState<DiscoverySkillItem[]>([]);
+  const [installProgress, setInstallProgress] = useState<{
+    current: number;
+    total: number;
+    currentName: string;
+  } | null>(null);
+  const [isBatchInstalling, setIsBatchInstalling] = useState(false);
   const [installError, setInstallError] = useState<string | null>(null);
   const [shareTarget, setShareTarget] = useState<{ skill?: Skill; isBatch?: boolean } | null>(null);
   const [tagEditingSkillId, setTagEditingSkillId] = useState<string | null>(null);
@@ -214,7 +218,7 @@ export default function App() {
   // 打开新安装目标时清空上一次的错误
   useEffect(() => {
     setInstallError(null);
-  }, [installItem]);
+  }, [installItems]);
 
   // ===== 新手指引（PRD 3.10）：首次启动自动弹出，完成/跳过后持久化标记 =====
   const completeOnboardingMutation = useCompleteOnboarding();
@@ -528,49 +532,102 @@ export default function App() {
     });
   };
 
-  // Finish installation from modal（真实安装命令，进度由 mutation 状态驱动）
-  const handleCompleteInstall = (params: {
-    item: DiscoverySkillItem;
+  // Finish installation from modal（真实安装命令，进度由 mutation 状态驱动）。
+  // 分发方式不随安装流程选择，统一读取「设置 → 常规」中的全局分发方式
+  const handleCompleteInstall = async (params: {
+    items: DiscoverySkillItem[];
     scope: ScopeType;
     projectId?: string;
     selectedTools: Record<ToolId, boolean>;
-    deployMethod: SkillDeployMethod;
   }) => {
     const toolIds = Object.entries(params.selectedTools)
       .filter(([, enabled]) => enabled)
       .map(([id]) => id);
 
     setInstallError(null);
-    installUnifiedMutation.mutate(
-      {
-        skill: params.item,
-        req: {
+    setIsBatchInstalling(true);
+
+    const isBatch = params.items.length > 1;
+    const succeeded: Skill[] = [];
+    const failed: Array<{ item: DiscoverySkillItem; error: string }> = [];
+
+    for (let i = 0; i < params.items.length; i++) {
+      const item = params.items[i];
+      setInstallProgress({
+        current: i + 1,
+        total: params.items.length,
+        currentName: item.displayName || item.name,
+      });
+
+      try {
+        const installed = await skillsApi.installUnified(item, {
           scope: params.scope,
           projectId: params.projectId,
           toolIds,
-          deployMethod: params.deployMethod,
-        },
-      },
-      {
-        onSuccess: (installed) => {
-          setInstallItem(null);
-          setInstallError(null);
-          setCurrentTab('installed');
-          // 重置筛选，确保新装技能在列表中立即可见
-          setSearchQuery('');
-          setSelectedScope('all');
-          setSelectedTags([]);
-          addToast(
-            'success',
-            `技能「${installed.displayName}」安装完成`,
-            '已保存至技能仓库并在选定工具中生效。'
-          );
-        },
-        onError: (err) => {
-          setInstallError(errorToString(err));
-        },
-      },
-    );
+          deployMethod: appSettings?.distributionMethod ?? 'copy',
+        });
+        succeeded.push(installed);
+      } catch (err) {
+        failed.push({ item, error: errorToString(err) });
+      }
+    }
+
+    setIsBatchInstalling(false);
+    setInstallProgress(null);
+
+    // 自动为新安装成功的技能生成中文简介
+    if (succeeded.length > 0) {
+      const apiKey = readLlmApiKey().trim();
+      if (apiKey) {
+        const targetLanguage = appSettings?.locale === 'en' ? 'en' : 'zh';
+        void settingsApi
+          .processSkillDescriptions(
+            succeeded.map((s) => s.id),
+            apiKey,
+            targetLanguage,
+          )
+          .then(() => queryClient.invalidateQueries({ queryKey: APP_STATE_KEY }))
+          .catch((err) => console.warn('简介自动生成失败:', err));
+      }
+    }
+
+    await queryClient.invalidateQueries({ queryKey: APP_STATE_KEY });
+
+    if (failed.length === 0) {
+      setInstallItems([]);
+      setInstallError(null);
+      setCurrentTab('installed');
+      setSearchQuery('');
+      setSelectedScope('all');
+      setSelectedTags([]);
+      addToast(
+        'success',
+        isBatch
+          ? `一键安装完成（已安装全部 ${succeeded.length} 项）`
+          : `技能「${succeeded[0]?.displayName ?? params.items[0].displayName}」安装完成`,
+        '已保存至技能仓库并在选定工具中生效。',
+      );
+    } else if (succeeded.length > 0) {
+      // 部分成功
+      setInstallItems(failed.map((f) => f.item));
+      setInstallError(
+        `以下技能安装失败：\n` +
+          failed.map((f) => `• ${f.item.displayName}: ${f.error}`).join('\n'),
+      );
+      addToast(
+        'warning',
+        `安装部分完成（成功 ${succeeded.length} 项，失败 ${failed.length} 项）`,
+        failed.map((f) => `${f.item.displayName}: ${f.error}`).join('; '),
+      );
+    } else {
+      // 全部失败
+      setInstallError(
+        isBatch
+          ? `全部技能安装失败：\n` +
+              failed.map((f) => `• ${f.item.displayName}: ${f.error}`).join('\n')
+          : failed[0].error,
+      );
+    }
   };
 
   // Toggle tag selection (sidebar filter)
@@ -701,10 +758,8 @@ export default function App() {
     <div className="flex flex-col h-screen w-full bg-white text-slate-900 select-none overflow-hidden font-sans">
       {/* 无边框窗口：标题栏与主导航合并为一行（含自绘窗口控制按钮） */}
       <HeaderBar
-        tools={tools}
         totalSkillsCount={skills.length}
         updateAvailableCount={updateAvailableCount}
-        projectsCount={projects.length}
         locale={settings.locale}
         currentTab={currentTab}
         onSelectTab={(tab) => {
@@ -803,22 +858,7 @@ export default function App() {
                   ) : (
                     <>显示 <strong className="text-slate-800">{filteredSkills.length}</strong> / {skills.length} 项</>
                   )}
-                  {selectedSkillIds.size > 0 && (
-                    <span className="ml-1 text-indigo-600 font-medium">
-                      {appSettings?.locale === 'en' ? `(Selected ${selectedSkillIds.size})` : `(已选 ${selectedSkillIds.size})`}
-                    </span>
-                  )}
                 </span>
-
-                {selectedSkillIds.size > 0 && !isAllFilteredSelected && (
-                  <button
-                    onClick={handleClearSelection}
-                    className="text-sm text-slate-500 hover:text-slate-700 font-medium px-2 py-1 rounded-lg hover:bg-slate-100 transition-colors"
-                    title={t('清除所有已选项目', 'Clear all selected skills')}
-                  >
-                    {t('清除选择', 'Clear selection')}
-                  </button>
-                )}
 
                 {filteredSkills.length > 0 && (
                   <button
@@ -899,7 +939,8 @@ export default function App() {
           <DiscoveryView
             installedSkills={skills}
             addToast={addToast}
-            onSelectInstall={(item) => setInstallItem(item)}
+            onSelectInstall={(item) => setInstallItems([item])}
+            onBatchInstall={(items) => setInstallItems(items)}
           />
         </main>
 
@@ -944,14 +985,20 @@ export default function App() {
 
       {/* Modals & Dialogs */}
       {/* 1. Unified Install Modal */}
-      {installItem && (
+      {installItems.length > 0 && (
         <InstallModal
-          item={installItem}
+          items={installItems}
           tools={tools}
           projects={projects}
-          onClose={() => setInstallItem(null)}
+          onClose={() => {
+            if (!isBatchInstalling && !installUnifiedMutation.isPending) {
+              setInstallItems([]);
+              setInstallError(null);
+            }
+          }}
           onConfirmInstall={handleCompleteInstall}
-          isInstalling={installUnifiedMutation.isPending}
+          isInstalling={isBatchInstalling || installUnifiedMutation.isPending}
+          installProgress={installProgress}
           installError={installError}
         />
       )}

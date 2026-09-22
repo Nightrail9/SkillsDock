@@ -6,45 +6,53 @@ import {
   Globe, 
   FolderGit2, 
   Check, 
-  Sparkles, 
-  Layers,
+  Loader2, 
   ArrowRight,
   AlertCircle
 } from 'lucide-react';
 import { DiscoverySkillItem } from '../types';
 import { ToolAdapter, ProjectScope, ToolId, ScopeType } from '../types';
 import { ToolBrandIcon } from './icons/BrandIcons';
-import { useAppState } from '../hooks/useAppState';
+
+interface InstallProgressInfo {
+  current: number;
+  total: number;
+  currentName: string;
+}
 
 interface InstallModalProps {
-  item: DiscoverySkillItem | null;
+  item?: DiscoverySkillItem | null;
+  items?: DiscoverySkillItem[];
   tools: ToolAdapter[];
   projects: ProjectScope[];
   onClose: () => void;
   onConfirmInstall: (params: {
-    item: DiscoverySkillItem;
+    items: DiscoverySkillItem[];
     scope: ScopeType;
     projectId?: string;
     selectedTools: Record<ToolId, boolean>;
-    deployMethod: 'symlink' | 'copy';
   }) => void;
   /** 安装命令执行中（真实后端进度，由外部 mutation 驱动） */
   isInstalling?: boolean;
+  /** 批量安装进度 */
+  installProgress?: InstallProgressInfo | null;
   /** 安装失败信息（展示后可返回配置页重试） */
   installError?: string | null;
 }
 
 export const InstallModal: React.FC<InstallModalProps> = ({
   item,
+  items,
   tools,
   projects,
   onClose,
   onConfirmInstall,
   isInstalling = false,
+  installProgress = null,
   installError = null,
 }) => {
-  // 应用设置（react-query 缓存；数据未就绪时回落默认行为）
-  const { data: appState } = useAppState();
+  const skillList = items && items.length > 0 ? items : item ? [item] : [];
+  const isBatch = skillList.length > 1;
 
   const [step, setStep] = useState<'config' | 'installing'>('config');
   const [scope, setScope] = useState<ScopeType>('global');
@@ -53,15 +61,16 @@ export const InstallModal: React.FC<InstallModalProps> = ({
   const [selectedTools, setSelectedTools] = useState<Record<ToolId, boolean>>(() =>
     Object.fromEntries(tools.filter((t) => t.isEnabled).map((t) => [t.id, true])),
   );
-  // 部署方式默认值取自全局设置，设置未就绪时回落 copy
-  const [deployMethod, setDeployMethod] = useState<'symlink' | 'copy'>(
-    () => appState?.settings?.distributionMethod ?? 'copy',
-  );
+  // 分发方式不在安装流程中选择：始终由「设置 → 常规」的全局分发方式决定
 
   // 安装失败时回到配置页以便调整重试
   useEffect(() => {
     if (installError) setStep('config');
   }, [installError]);
+
+  useEffect(() => {
+    if (isInstalling) setStep('installing');
+  }, [isInstalling]);
 
   // Close on Escape
   useEffect(() => {
@@ -74,7 +83,9 @@ export const InstallModal: React.FC<InstallModalProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [onClose, isInstalling]);
 
-  if (!item) return null;
+  if (skillList.length === 0) return null;
+
+  const singleItem = skillList[0];
 
   const toggleTool = (toolId: ToolId) => {
     setSelectedTools((prev) => ({
@@ -85,15 +96,14 @@ export const InstallModal: React.FC<InstallModalProps> = ({
 
   const handleStartInstall = () => {
     // 防护：安装进行中或项目作用域未选项目时不允许提交
-    if (isInstalling) return;
+    if (isInstalling || skillList.length === 0) return;
     if (scope === 'project' && !projectId) return;
     setStep('installing');
     onConfirmInstall({
-      item,
+      items: skillList,
       scope,
       projectId: scope === 'project' ? projectId : undefined,
       selectedTools,
-      deployMethod,
     });
   };
 
@@ -112,9 +122,13 @@ export const InstallModal: React.FC<InstallModalProps> = ({
               <Download className="w-4 h-4" />
             </div>
             <div>
-              <h3 className="text-sm font-bold text-slate-900">安装技能并分发至工具</h3>
+              <h3 className="text-sm font-bold text-slate-900">
+                {isBatch ? `一键安装全部技能（共 ${skillList.length} 项）` : '安装技能并分发至工具'}
+              </h3>
               <p className="text-[11px] text-slate-500 font-mono">
-                {item.repo || item.author}
+                {isBatch
+                  ? `将统一配置并分发至指定 AI 工具`
+                  : singleItem.repo || singleItem.author}
               </p>
             </div>
           </div>
@@ -132,31 +146,71 @@ export const InstallModal: React.FC<InstallModalProps> = ({
         {/* Content */}
         <div className="p-6 space-y-5 text-xs">
           {step === 'installing' ? (
-            <div className="py-10 text-center space-y-4">
-              <div className="w-14 h-14 mx-auto rounded-2xl bg-indigo-50 flex items-center justify-center text-indigo-600 animate-spin">
-                <Sparkles className="w-7 h-7" />
+            <div className="py-10 text-center space-y-5">
+              <div className="w-14 h-14 mx-auto rounded-2xl bg-indigo-50 border border-indigo-100/80 flex items-center justify-center text-indigo-600 shadow-2xs">
+                <Loader2 className="w-7 h-7 animate-spin" />
               </div>
               <div>
-                <h4 className="font-bold text-slate-900 text-sm">正在安装并建立分发链接...</h4>
-                <p className="text-slate-500 text-xs mt-1 font-mono">
-                  1. 下载并解压至技能仓库 → 2. 写入本地索引 → 3. 分发到目标工具目录
-                </p>
+                <h4 className="font-bold text-slate-900 text-sm">
+                  {installProgress
+                    ? `正在安装技能 (${installProgress.current}/${installProgress.total})`
+                    : isBatch
+                    ? '正在批量安装并建立分发链接...'
+                    : '正在安装并建立分发链接...'}
+                </h4>
+                {installProgress && (
+                  <p className="text-xs text-indigo-600 font-mono mt-1.5 truncate max-w-sm mx-auto">
+                    {installProgress.currentName}
+                  </p>
+                )}
               </div>
               <div className="w-72 mx-auto bg-slate-100 rounded-full h-2.5 overflow-hidden relative">
-                <div className="progress-indeterminate bg-indigo-600" />
+                {installProgress ? (
+                  <div
+                    className="bg-indigo-600 h-full transition-all duration-300 rounded-full"
+                    style={{
+                      width: `${Math.max(
+                        5,
+                        Math.round((installProgress.current / installProgress.total) * 100)
+                      )}%`,
+                    }}
+                  />
+                ) : (
+                  <div className="progress-indeterminate bg-indigo-600" />
+                )}
               </div>
             </div>
           ) : (
             <>
               {/* Skill Brief Banner */}
-              <div className="p-3.5 bg-slate-50 rounded-2xl border border-slate-200/80 flex items-start justify-between gap-3">
-                <div>
-                  <div className="font-bold text-slate-900 text-sm flex items-center gap-2">
-                    <span>{item.displayName}</span>
+              {isBatch ? (
+                <div className="p-3.5 bg-slate-50 rounded-2xl border border-slate-200/80 space-y-2">
+                  <div className="font-bold text-slate-800 text-xs flex items-center justify-between">
+                    <span>即将安装以下 {skillList.length} 个技能：</span>
                   </div>
-                  <p className="text-slate-600 mt-1 text-xs leading-relaxed">{item.description}</p>
+                  <div className="max-h-32 overflow-y-auto space-y-1.5 pr-1 divide-y divide-slate-200/50">
+                    {skillList.map((s, idx) => (
+                      <div key={s.id || idx} className="pt-1.5 first:pt-0 flex items-center justify-between gap-2">
+                        <div className="truncate font-semibold text-slate-800 text-xs">
+                          {s.displayName || s.name}
+                        </div>
+                        <div className="text-[10px] text-slate-400 font-mono shrink-0">
+                          {s.repo || s.author}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <div className="p-3.5 bg-slate-50 rounded-2xl border border-slate-200/80 flex items-start justify-between gap-3">
+                  <div>
+                    <div className="font-bold text-slate-900 text-sm flex items-center gap-2">
+                      <span>{singleItem.displayName}</span>
+                    </div>
+                    <p className="text-slate-600 mt-1 text-xs leading-relaxed">{singleItem.description}</p>
+                  </div>
+                </div>
+              )}
 
               {/* Install Error Banner */}
               {installError && (
@@ -174,7 +228,9 @@ export const InstallModal: React.FC<InstallModalProps> = ({
                 <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
                 <div>
                   <span className="font-bold">安全提示：</span>
-                  此技能来自外部第三方源（{item.repo || item.author}）。客户端纯本地运行，不拦截脚本，请确保您信任该仓库及其指令规范。
+                  {isBatch
+                    ? '所选技能均来自外部第三方源。客户端纯本地运行，不拦截脚本，请确保您信任这些仓库或来源。'
+                    : `此技能来自外部第三方源（${singleItem.repo || singleItem.author}）。客户端纯本地运行，不拦截脚本，请确保您信任该仓库及其指令规范。`}
                 </div>
               </div>
 
@@ -290,24 +346,6 @@ export const InstallModal: React.FC<InstallModalProps> = ({
                 })()}
 
               </div>
-
-              {/* Distribution Method Confirmation */}
-              <div className="p-3.5 bg-slate-50 rounded-2xl border border-slate-200/80 flex items-center justify-between text-[11px]">
-                <div className="flex items-center gap-2">
-                  <Layers className="w-4 h-4 text-indigo-600" />
-                  <span className="text-slate-600">分发方式:</span>
-                  <span className="font-bold text-slate-800">
-                    {deployMethod === 'symlink' ? '符号链接 (Symlink · 零冗余即时同步)' : '文件复制 (Copy)'}
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setDeployMethod(deployMethod === 'symlink' ? 'copy' : 'symlink')}
-                  className="text-indigo-600 hover:text-indigo-800 font-semibold hover:underline"
-                >
-                  切换为{deployMethod === 'symlink' ? '文件复制' : '符号链接'}
-                </button>
-              </div>
             </>
           )}
         </div>
@@ -331,7 +369,7 @@ export const InstallModal: React.FC<InstallModalProps> = ({
                 <span>正在安装...</span>
               ) : (
                 <>
-                  <span>确认安装并启用</span>
+                  <span>{isBatch ? `确认安装全部技能 (${skillList.length})` : '确认安装并启用'}</span>
                   <ArrowRight className="w-3.5 h-3.5" />
                 </>
               )}

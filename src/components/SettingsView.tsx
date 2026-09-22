@@ -15,7 +15,6 @@ import {
   Check, 
   HelpCircle, 
   HardDrive, 
-  CheckCircle2,
   AlertCircle,
   RefreshCw,
   RotateCcw,
@@ -297,7 +296,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   };
 
   const isMigrating = migrateMutation.isPending;
-  const activeToolsCount = tools.filter((t) => t.isEnabled && t.detected).length;
 
   const subNavItems: {
     id: SettingsSubTab;

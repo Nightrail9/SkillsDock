@@ -333,6 +333,29 @@ pub struct InstallSkillInput {
     pub tags: Option<Vec<String>>,
 }
 
+/// 仓库技能探测结果条目（probe_repo_skills）
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProbedRepoSkill {
+    /// 技能目录名（安装名；仓库根级技能为仓库名）
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// 仓库内相对目录（根级技能为 ""）
+    pub subpath: String,
+}
+
+/// 仓库技能探测结果（probe_repo_skills）
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoSkillProbe {
+    /// 实际命中的分支（请求分支无效时回退 main / master）
+    pub branch: String,
+    pub skills: Vec<ProbedRepoSkill>,
+}
+
 /// 更新检测结果
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

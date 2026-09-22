@@ -13,6 +13,7 @@ import type {
   DescriptionProcessingResult,
   ProjectPathStatus,
   ProjectScope,
+  RepoSkillProbe,
   ScopeType,
   ShareLinkParseResult,
   Skill,
@@ -70,6 +71,11 @@ export const skillsApi = {
   /** 统一安装（发现页条目：GitHub 仓库 / skills.sh） */
   installUnified(skill: DiscoverySkillItem, req: InstallRequest): Promise<Skill> {
     return invokeCommand('install_skill_unified', { skill, ...req });
+  },
+
+  /** 探测 GitHub 仓库内全部可安装技能（目录含 SKILL.md 即为一个技能） */
+  probeRepoSkills(owner: string, name: string, branch: string): Promise<RepoSkillProbe> {
+    return invokeCommand('probe_repo_skills', { owner, name, branch });
   },
 
   /** 回填无来源技能的 skills.sh 注册表来源，返回成功回填的条数 */

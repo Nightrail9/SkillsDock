@@ -210,13 +210,50 @@ export async function handleMockInvoke<T>(command: string, args?: Record<string,
     case 'search_skills_sh':
       return [] as T;
 
+    case 'probe_repo_skills': {
+      // Mock：模拟一个多技能仓库的探测结果，保证纯浏览器预览可用
+      const branch = (args?.branch as string) || 'main';
+      return {
+        branch,
+        skills: [
+          {
+            name: 'pdf',
+            displayName: 'PDF',
+            description: 'Comprehensive PDF manipulation toolkit for extracting text and tables, creating new documents.',
+            subpath: 'skills/pdf',
+          },
+          {
+            name: 'docx',
+            displayName: 'DOCX',
+            description: 'Comprehensive document creation, editing, and analysis with revision tracking and format conversion.',
+            subpath: 'skills/docx',
+          },
+          {
+            name: 'internal-comms',
+            displayName: 'Internal Communications',
+            description: 'Professional internal communications with appropriate tone for org-wide announcements.',
+            subpath: 'skills/internal-comms',
+          },
+        ],
+      } as T;
+    }
+
     case 'validate_tool_path':
       return { valid: true, exists: true, isDir: true } as T;
 
-    case 'get_skill_detail': {
-      const skillId = args?.skillId as string;
-      const skill = mockState.skills.find((s) => s.id === skillId) || mockState.skills[0];
-      return JSON.parse(JSON.stringify(skill)) as T;
+    case 'probe_repo_skills': {
+      const branch = (args?.branch as string) || 'main';
+      return {
+        branch,
+        skills: [
+          {
+            name: 'agent-tools',
+            displayName: 'Agent Tools',
+            description: 'Collection of useful tools and utilities for agent workflows.',
+            subpath: 'skills/agent-tools',
+          },
+        ],
+      } as T;
     }
 
     default:

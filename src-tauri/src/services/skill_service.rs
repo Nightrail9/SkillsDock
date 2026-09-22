@@ -1012,22 +1012,26 @@ impl SkillService {
     /// 解析 SKILL.md frontmatter（splitn(3, "---") + serde_yaml）
     pub fn parse_skill_metadata_static(path: &Path) -> Result<SkillMetadata> {
         let content = fs::read_to_string(path)?;
+        Ok(Self::parse_skill_metadata_str(&content))
+    }
+
+    /// 解析 frontmatter 字符串（非法 YAML 返回空元数据；仓库探测等内存解析场景用）
+    pub fn parse_skill_metadata_str(content: &str) -> SkillMetadata {
         let content = content.trim_start_matches('\u{feff}');
 
         let parts: Vec<&str> = content.splitn(3, "---").collect();
         if parts.len() < 3 {
-            return Ok(SkillMetadata {
+            return SkillMetadata {
                 name: None,
                 description: None,
-            });
+            };
         }
 
         let front_matter = parts[1].trim();
-        let meta: SkillMetadata = serde_yaml::from_str(front_matter).unwrap_or(SkillMetadata {
+        serde_yaml::from_str(front_matter).unwrap_or(SkillMetadata {
             name: None,
             description: None,
-        });
-        Ok(meta)
+        })
     }
 
     /// 从 SKILL.md 读取名称和描述，不存在则用目录名兜底
