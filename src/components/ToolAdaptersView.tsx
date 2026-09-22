@@ -276,11 +276,8 @@ export const ToolAdaptersView: React.FC<ToolAdaptersViewProps> = ({
 
       {/* Add Custom Tool Modal */}
       {showAddModal && (
-        <div 
+        <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4 animate-in fade-in duration-150"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setShowAddModal(false);
-          }}
         >
           <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 w-full max-w-md p-6 space-y-4 animate-in zoom-in-95 duration-150">
             <h3 className="text-sm font-bold text-slate-900">添加自定义 AI 工具</h3>
@@ -362,11 +359,6 @@ export const ToolAdaptersView: React.FC<ToolAdaptersViewProps> = ({
       {toolPendingDelete && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4 animate-in fade-in duration-150"
-          onClick={(e) => {
-            if (e.target === e.currentTarget && !deleteToolMutation.isPending) {
-              setToolPendingDelete(null);
-            }
-          }}
         >
           <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 w-full max-w-md p-6 space-y-4 animate-in zoom-in-95 duration-150">
             <div className="flex items-start gap-3.5">

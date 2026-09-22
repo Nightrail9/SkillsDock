@@ -108,13 +108,10 @@ export const InstallModal: React.FC<InstallModalProps> = ({
   };
 
   return (
-    <div 
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4 overflow-y-auto animate-in fade-in duration-150"
-      onClick={(e) => {
-        if (e.target === e.currentTarget && !isInstalling) onClose();
-      }}
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4 animate-in fade-in duration-150"
     >
-      <div className="bg-white rounded-3xl shadow-2xl border border-slate-200/90 w-full max-w-xl overflow-hidden animate-in zoom-in-95 duration-150">
+      <div className="bg-white rounded-3xl shadow-2xl border border-slate-200/90 w-full max-w-xl max-h-full flex flex-col overflow-hidden animate-in zoom-in-95 duration-150">
         {/* Header */}
         <div className="px-6 py-5 border-b border-slate-200/80 flex items-center justify-between bg-slate-50/70">
           <div className="flex items-center gap-3">
@@ -144,7 +141,7 @@ export const InstallModal: React.FC<InstallModalProps> = ({
         </div>
 
         {/* Content */}
-        <div className="p-6 space-y-5 text-xs">
+        <div className="p-6 space-y-5 text-xs flex-1 min-h-0 overflow-y-auto">
           {step === 'installing' ? (
             <div className="py-10 text-center space-y-5">
               <div className="w-14 h-14 mx-auto rounded-2xl bg-indigo-50 border border-indigo-100/80 flex items-center justify-center text-indigo-600 shadow-2xs">

@@ -132,10 +132,10 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
   const totalSteps = 4;
 
   return (
-    <div 
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-md p-4 overflow-y-auto animate-in fade-in duration-150"
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-md p-4 animate-in fade-in duration-150"
     >
-      <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 w-full max-w-xl overflow-hidden animate-in zoom-in-95 duration-150">
+      <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 w-full max-w-xl max-h-full flex flex-col overflow-hidden animate-in zoom-in-95 duration-150">
         {/* Top Header */}
         <div className="px-6 py-5 border-b border-slate-200/80 flex items-center justify-between bg-slate-50/70">
           <div className="flex items-center gap-2">
@@ -160,7 +160,8 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
         </div>
 
         {/* Step Content */}
-        <div className="p-6 text-xs space-y-4 min-h-[340px] flex flex-col justify-between">
+        <div className="p-6 text-xs space-y-4 min-h-[340px] flex flex-col justify-between flex-1">
+          <div className="flex-1 min-h-0 overflow-y-auto">
           {/* STEP 1: 欢迎与架构说明 */}
           {currentStep === 1 && (
             <div className="space-y-4 animate-in fade-in duration-150">
@@ -391,8 +392,10 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
             </div>
           )}
 
+          </div>
+
           {/* Stepper Buttons */}
-          <div className="pt-4 border-t border-slate-200/80 flex items-center justify-between">
+          <div className="pt-4 border-t border-slate-200/80 flex items-center justify-between shrink-0">
             {currentStep > 1 ? (
               <button
                 onClick={() => setCurrentStep((prev) => prev - 1)}
