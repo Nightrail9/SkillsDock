@@ -726,7 +726,7 @@ export default function App() {
         <div className="w-12 h-12 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center">
           <RefreshCw className="w-6 h-6 animate-spin" />
         </div>
-        <div className="text-sm font-semibold text-slate-700">正在加载技能坞数据...</div>
+        <div className="text-sm font-semibold text-slate-700">正在加载 SkillDock 数据...</div>
         <div className="text-xs text-slate-400">正在读取技能仓库、工具适配器与设置</div>
       </div>
     );

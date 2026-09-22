@@ -1,4 +1,4 @@
-//! 技能坞 SkillDock — Tauri v2 后端
+//! SkillDock Tauri v2 后端
 
 pub mod commands;
 pub mod config;
