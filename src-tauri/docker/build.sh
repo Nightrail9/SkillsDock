@@ -7,32 +7,25 @@
 #
 # 环境变量：
 #   REPO              仓库根目录（默认当前目录）
-#   CARGO_TARGET_DIR  构建产物目录（默认 $REPO/src-tauri/target-linux，
-#                     与宿主机 Windows 构建的 src-tauri/target 隔离；
+#   CARGO_TARGET_DIR  构建产物目录（默认 $REPO/src-tauri/target-linux/<架构>，
+#                     与宿主机 Windows 及另一架构的构建产物隔离；
 #                     WSL 中可指向 $HOME/target-linux 避开 9p 文件系统）
 set -euo pipefail
 
 ARCH="${1:-amd64}"
 REPO="${REPO:-$(pwd)}"
-export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$REPO/src-tauri/target-linux}"
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$REPO/src-tauri/target-linux/$ARCH}"
 
 cd "$REPO"
 
-CROSS_ENV=()
 case "$ARCH" in
   amd64)
-    TARGET="x86_64-unknown-linux-gnu"
+    EXPECTED_MACHINE="x86_64"
     OUT_DIR="$REPO/dist-release/linux/x86_64"
     ;;
   aarch64)
-    TARGET="aarch64-unknown-linux-gnu"
+    EXPECTED_MACHINE="aarch64"
     OUT_DIR="$REPO/dist-release/linux/aarch64"
-    CROSS_ENV=(
-      "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc"
-      "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc"
-      "PKG_CONFIG_ALLOW_CROSS=1"
-      "PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig"
-    )
     ;;
   *)
     echo "usage: build-linux.sh [amd64|aarch64]" >&2
@@ -40,7 +33,14 @@ case "$ARCH" in
     ;;
 esac
 
-# linuxdeploy/appimagetool 在 x86_64 上运行其它架构 ELF 时需要 FUSE-free 的解压运行模式
+ACTUAL_MACHINE="$(uname -m)"
+if [ "$ACTUAL_MACHINE" != "$EXPECTED_MACHINE" ]; then
+  echo "错误：请求构建 $ARCH，但当前容器架构为 $ACTUAL_MACHINE" >&2
+  echo "请使用 docker buildx build --platform linux/$ARCH 构建对应镜像。" >&2
+  exit 2
+fi
+
+# AppImage 工具在容器中以免 FUSE 模式运行
 export APPIMAGE_EXTRACT_AND_RUN=1
 
 echo "==> 环境"
@@ -51,14 +51,9 @@ rustc --version
 echo "==> 安装前端依赖（Linux 原生二进制，不复用宿主机 node_modules）"
 npm ci --no-audit --no-fund
 
-echo "==> 构建 $TARGET（deb / rpm / AppImage）"
-if [ "$ARCH" = "amd64" ]; then
-  npm run tauri:build -- --bundles deb,rpm,appimage
-  BUNDLE_DIR="$CARGO_TARGET_DIR/release/bundle"
-else
-  env "${CROSS_ENV[@]}" npm run tauri:build -- --bundles deb,rpm,appimage --target "$TARGET"
-  BUNDLE_DIR="$CARGO_TARGET_DIR/$TARGET/release/bundle"
-fi
+echo "==> 构建 Linux $ARCH（deb / rpm / AppImage）"
+npm run tauri:build -- --bundles deb,rpm,appimage
+BUNDLE_DIR="$CARGO_TARGET_DIR/release/bundle"
 
 mkdir -p "$OUT_DIR"
 for kind in deb rpm appimage; do
