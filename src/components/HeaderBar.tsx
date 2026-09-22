@@ -110,7 +110,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
       onDoubleClick={handleDoubleClick}
       className="bg-white/90 backdrop-blur-md border-b border-slate-200/80 select-none shrink-0 sticky top-0 z-30"
     >
-      <div className="h-14 pl-5 flex items-center justify-between gap-4">
+      <div className="h-14 pl-5 flex items-center justify-between gap-6">
         {/* Left: Brand Identity */}
         <div className="flex items-center gap-3 shrink-0">
           <div className="cursor-default select-none">
@@ -124,7 +124,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
         </div>
 
         {/* Center: Polished Segmented Control Navigation */}
-        <nav className="flex items-center bg-slate-100/80 p-1 rounded-xl border border-slate-200/70 shadow-inner">
+        <nav className="flex items-center gap-1 bg-slate-100/80 p-1 rounded-xl border border-slate-200/70 shadow-inner">
           {navItems.map((item) => {
             const isActive = currentTab === item.id;
             return (

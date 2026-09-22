@@ -461,9 +461,11 @@ impl SkillService {
             return Ok(None);
         }
         Self::charge_archive_budget(total_bytes, raw.len() as u64)?;
+        // 归档内符号链接目标同样可能用反斜杠分隔（Windows 侧生成）；
+        // read_link 写入的目标按字面处理，统一归一化为 "/"，与条目名处理保持一致。
         Ok(String::from_utf8(raw)
             .ok()
-            .map(|target| target.trim().to_string()))
+            .map(|target| target.trim().replace('\\', "/")))
     }
 
     /// 建目录并按实际新建的层数计费
@@ -505,7 +507,9 @@ impl SkillService {
                 )));
             }
             let first_file = archive.by_index(0)?;
-            let name = first_file.name();
+            // 归一化反斜杠分隔符：ZIP 规范用 "/"，但 Windows 侧工具生成的归档可能用 "\"。
+            // Unix 上反斜杠不是路径分隔符，不归一化会把整个条目当成单层文件名，导致剥根失败。
+            let name = first_file.name().replace('\\', "/");
             Some(name.split('/').next().unwrap_or("").to_string())
         } else {
             if archive.is_empty() {
@@ -540,12 +544,17 @@ impl SkillService {
                 continue;
             };
 
+            // 与上面的根目录探测同理：Windows 侧归档的条目名可能用反斜杠分隔，
+            // Unix 上 enclosed_name 会把它当成单个组件名。归一化为 "/" 后再剥根目录。
+            let entry_name = safe_path.to_string_lossy().replace('\\', "/");
+            let entry_path = std::path::Path::new(&entry_name);
+
             let relative_path = match &root_name {
-                Some(root) => match safe_path.strip_prefix(root) {
+                Some(root) => match entry_path.strip_prefix(root) {
                     Ok(rel) => rel.to_path_buf(),
                     Err(_) => continue,
                 },
-                None => safe_path.to_path_buf(),
+                None => entry_path.to_path_buf(),
             };
 
             // 第二道：enclosed_name() 不消解 `..`；剥根目录会花掉一级深度预算，

@@ -174,8 +174,10 @@ export async function handleMockInvoke<T>(command: string, args?: Record<string,
       mockState.onboardingCompleted = true;
       return undefined as T;
 
+    // 与后端 commands::toggle_tool_enabled 对齐；旧名 toggle_tool_adapter 保留兼容
+    case 'toggle_tool_enabled':
     case 'toggle_tool_adapter': {
-      const toolId = args?.toolId as string;
+      const toolId = args?.id as string;
       const enabled = args?.enabled as boolean;
       const tool = mockState.tools.find((t) => t.id === toolId);
       if (tool) {

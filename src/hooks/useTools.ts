@@ -5,7 +5,7 @@ import {
   type UpdateToolAdapterRequest,
 } from '../lib/api';
 import { APP_STATE_KEY } from './useAppState';
-import type { ToolId } from '../types';
+import type { AppState, ToolId } from '../types';
 
 export function useAddToolAdapter() {
   const queryClient = useQueryClient();
@@ -36,6 +36,22 @@ export function useToggleToolEnabled() {
   return useMutation({
     mutationFn: ({ id, enabled }: { id: ToolId; enabled: boolean }) =>
       toolsApi.toggleToolEnabled(id, enabled),
+    // 乐观更新：点击后开关立即翻转，避免等后端往返才动
+    onMutate: async ({ id, enabled }) => {
+      await queryClient.cancelQueries({ queryKey: APP_STATE_KEY });
+      const previous = queryClient.getQueryData<AppState>(APP_STATE_KEY);
+      if (previous) {
+        queryClient.setQueryData<AppState>(APP_STATE_KEY, {
+          ...previous,
+          tools: previous.tools.map((t) => (t.id === id ? { ...t, isEnabled: enabled } : t)),
+        });
+      }
+      return { previous };
+    },
+    onError: (_err, _vars, ctx) => {
+      // 失败时回滚到切换前的状态，保持界面与后端一致
+      if (ctx?.previous) queryClient.setQueryData(APP_STATE_KEY, ctx.previous);
+    },
     onSettled: () => queryClient.invalidateQueries({ queryKey: APP_STATE_KEY }),
   });
 }

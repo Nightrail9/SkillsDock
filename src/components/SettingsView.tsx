@@ -31,18 +31,24 @@ import {
   FileText
 } from 'lucide-react';
 import { openUrl } from '@tauri-apps/plugin-opener';
+import { getVersion } from '@tauri-apps/api/app';
 import { SkillDockLogo } from './icons/BrandIcons';
 import { AppSettings, ToolAdapter, AddToastFn, LlmConfigInput, ProjectScope, Skill } from '../types';
 import { useMigrateLibrary } from '../hooks/useSettings';
 import { useAppState, useInvalidateAppState } from '../hooks/useAppState';
 import { settingsApi } from '../lib/api';
+import { isTauriEnvironment } from '../lib/api/mockData';
 import { collapseHomePath } from '../lib/utils/pathDisplay';
+import { isWindowsPlatform } from '../lib/utils/platform';
 import { errorToString } from '../lib/errors/skillErrorParser';
 import { readLlmApiKey, writeLlmApiKey } from '../lib/llmKey';
 import { applyTheme } from '../hooks/useTheme';
 import { applyLocale } from '../hooks/useLocale';
 import { ToolAdaptersView } from './ToolAdaptersView';
 import { ProjectsView } from './ProjectsView';
+
+/** 纯浏览器预览模式下的版本兜底值（Tauri 内一律以 getVersion() 为准） */
+const FALLBACK_APP_VERSION = '0.3.1';
 
 export type SettingsSubTab = 'general' | 'tools' | 'projects' | 'model' | 'about';
 
@@ -88,6 +94,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [showAdminConfirm, setShowAdminConfirm] = useState(false);
   const [isElevating, setIsElevating] = useState(false);
+  const [appVersion, setAppVersion] = useState<string>('');
   const [llmForm, setLlmForm] = useState<{
     providerName: string;
     baseUrl: string;
@@ -114,6 +121,21 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     confirmedSettingsRef.current = settings;
     setFormData((prev) => ({ ...prev, ...settings }));
   }, [settings]);
+
+  // 关于页版本号：Tauri 内从包信息读取（单一事实源），浏览器预览用兜底常量
+  useEffect(() => {
+    let disposed = false;
+    if (!isTauriEnvironment()) {
+      setAppVersion(FALLBACK_APP_VERSION);
+      return;
+    }
+    getVersion()
+      .then((v) => !disposed && setAppVersion(v))
+      .catch(() => !disposed && setAppVersion(FALLBACK_APP_VERSION));
+    return () => {
+      disposed = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!llmConfig) return;
@@ -223,6 +245,20 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const handleSelectDistributionMethod = (method: 'symlink' | 'copy') => {
     if (method === 'symlink') {
       if (!settings.developerModeEnabled) {
+        if (!isWindowsPlatform()) {
+          // macOS/Linux 原生支持创建符号链接；探测未通过说明当前挂载点/沙箱不支持，
+          // 此时应回退复制并明确告知，而不是弹出 Windows 专属的 UAC/开发者模式引导。
+          addToast(
+            'info',
+            t('当前环境不支持符号链接，已切换为文件复制', 'Symlinks unsupported here, switched to file copy'),
+            t(
+              '该文件系统不允许创建符号链接，技能将复制到各工具目录。',
+              'This filesystem does not allow symlinks; skills will be copied to each tool directory.',
+            ),
+          );
+          save({ ...formData, distributionMethod: 'copy' });
+          return;
+        }
         setShowAdminConfirm(true);
         return;
       }
@@ -524,7 +560,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       )}
                     </div>
                     <p className="text-xs text-slate-500 leading-relaxed">
-                      {t('技能仓库作为单一事实源，建立透明符号链接。需以管理员身份运行或在系统中启用开发者模式。', 'The skill library remains the single source of truth. Requires running as Administrator or enabling Developer Mode.')}
+                      {isWindowsPlatform()
+                        ? t('技能仓库作为单一事实源，建立透明符号链接。需以管理员身份运行或在系统中启用开发者模式。', 'The skill library remains the single source of truth. Requires running as Administrator or enabling Developer Mode.')
+                        : t('技能仓库作为单一事实源，建立透明符号链接。macOS / Linux 原生支持，无需额外设置。', 'The skill library remains the single source of truth. Natively supported on macOS / Linux, no extra setup required.')}
                     </p>
                   </div>
                 </div>
@@ -832,7 +870,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     <div className="flex items-center gap-2.5">
                       <h2 className="text-lg font-extrabold text-slate-900 tracking-tight">SkillsDock</h2>
                       <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200/70 font-mono">
-                        v1.2.0
+                        {appVersion ? `v${appVersion}` : 'v—'}
                       </span>
                       <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200/70 font-mono">
                         Apache-2.0

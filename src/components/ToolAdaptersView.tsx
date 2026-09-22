@@ -149,12 +149,11 @@ export const ToolAdaptersView: React.FC<ToolAdaptersViewProps> = ({
     );
   };
 
-  const isBusy =
-    addToolMutation.isPending ||
-    updateToolMutation.isPending ||
-    deleteToolMutation.isPending ||
-    toggleToolMutation.isPending ||
-    isValidating;
+  // 每个控件的忙碌状态只跟随“自己这次操作”变化。
+  // 早期用全局 isBusy 会让任一 mutation 进行中时所有开关/按钮一起 disabled:opacity-50，
+  // 表现为切换一个工具时其它工具的开关集体闪烁。
+  const togglingToolId = toggleToolMutation.isPending ? toggleToolMutation.variables?.id : null;
+  const updatingToolId = updateToolMutation.isPending ? updateToolMutation.variables?.id : null;
 
   return (
     <div className="flex-1 overflow-y-auto p-8 space-y-6">
@@ -162,7 +161,8 @@ export const ToolAdaptersView: React.FC<ToolAdaptersViewProps> = ({
       <div className="flex items-center justify-end pb-3 border-b border-slate-200/80">
         <button
           onClick={() => setShowAddModal(true)}
-          className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 rounded-xl transition-colors shadow-xs shrink-0"
+          disabled={addToolMutation.isPending || isValidating}
+          className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 rounded-xl transition-colors shadow-xs shrink-0 disabled:opacity-50"
         >
           <Plus className="w-4 h-4" />
           <span>添加自定义工具</span>
@@ -171,7 +171,10 @@ export const ToolAdaptersView: React.FC<ToolAdaptersViewProps> = ({
 
       {/* Tools Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {tools.map((tool) => (
+        {tools.map((tool) => {
+          const isTogglingThis = togglingToolId === tool.id;
+          const isUpdatingThis = updatingToolId === tool.id;
+          return (
           <div
             key={tool.id}
             className={`p-5 rounded-2xl border transition-all duration-200 flex flex-col justify-between ${
@@ -203,8 +206,8 @@ export const ToolAdaptersView: React.FC<ToolAdaptersViewProps> = ({
                 {/* Master Switch */}
                 <button
                   onClick={() => handleToggleEnabled(tool)}
-                  disabled={isBusy}
-                  className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-hidden disabled:opacity-50 ${
+                  disabled={isTogglingThis}
+                  className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-hidden disabled:opacity-50 disabled:cursor-wait ${
                     tool.isEnabled ? 'bg-indigo-600' : 'bg-slate-300'
                   }`}
                   role="switch"
@@ -237,7 +240,7 @@ export const ToolAdaptersView: React.FC<ToolAdaptersViewProps> = ({
                     <button
                       type="button"
                       onClick={() => handlePickFolder(tool)}
-                      disabled={isBusy}
+                      disabled={isUpdatingThis}
                       className="p-1.5 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 active:bg-indigo-100 rounded-lg border border-slate-200/80 hover:border-indigo-200 transition-colors shrink-0 shadow-2xs cursor-pointer disabled:opacity-50"
                       title="选择本地技能文件夹"
                       aria-label="选择本地技能文件夹"
@@ -262,7 +265,7 @@ export const ToolAdaptersView: React.FC<ToolAdaptersViewProps> = ({
               {!tool.isBuiltin && (
                 <button
                   onClick={() => setToolPendingDelete(tool)}
-                  disabled={isBusy}
+                  disabled={deleteToolMutation.isPending}
                   className="text-rose-600 hover:text-rose-800 font-semibold flex items-center gap-1 text-xs hover:underline disabled:opacity-50"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
@@ -271,7 +274,8 @@ export const ToolAdaptersView: React.FC<ToolAdaptersViewProps> = ({
               )}
             </div>
           </div>
-        ))}
+          );
+        })}
       </div>
 
       {/* Add Custom Tool Modal */}
@@ -341,7 +345,7 @@ export const ToolAdaptersView: React.FC<ToolAdaptersViewProps> = ({
                 </button>
                 <button
                   type="submit"
-                  disabled={isBusy}
+                  disabled={addToolMutation.isPending || isValidating}
                   className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 disabled:opacity-50 text-white rounded-xl font-bold shadow-xs text-xs flex items-center gap-1.5"
                 >
                   {(isValidating || addToolMutation.isPending) && (

@@ -445,12 +445,20 @@ pub fn add_skill_project(state: State<'_, AppState>, path: String) -> CmdResult<
     if !raw.is_dir() {
         return Err(format!("项目目录不存在或不是目录: {path}"));
     }
-    let canonical = raw
-        .canonicalize()
-        .map_err(|e| format!("无法解析项目目录: {path}: {e}"))?;
-    let normalized = match canonical.to_string_lossy() {
-        s if s.starts_with(r"\\?\") => std::path::PathBuf::from(s.trim_start_matches(r"\\?\")),
-        _ => canonical,
+    // 规范化：Windows 上 canonicalize 用于去掉 \\?\ 前缀并统一盘符大小写；
+    // macOS 的 realpath 会解析 firmlink（/Users/x → /System/Volumes/Data/Users/x），
+    // 存这种路径会让界面无法把项目路径折叠回 ~/...，因此非 Windows 平台只做绝对化，
+    // 不解析符号链接（目录校验已由上面的 is_dir 完成）。
+    let normalized = if cfg!(windows) {
+        let canonical = raw
+            .canonicalize()
+            .map_err(|e| format!("无法解析项目目录: {path}: {e}"))?;
+        match canonical.to_string_lossy() {
+            s if s.starts_with(r"\\?\") => std::path::PathBuf::from(s.trim_start_matches(r"\\?\")),
+            _ => canonical,
+        }
+    } else {
+        std::path::absolute(&raw).map_err(|e| format!("无法解析项目目录: {path}: {e}"))?
     };
     let key = normalized.to_string_lossy().to_string();
     if db
@@ -661,7 +669,9 @@ pub fn restart_as_admin() -> CmdResult<()> {
     }
     #[cfg(not(windows))]
     {
-        Ok(())
+        // macOS/Linux 没有 UAC 概念：明确报错让调用方给出可见反馈，
+        // 而不是静默返回成功让界面误以为已经重启。
+        Err("当前平台无需提权：macOS / Linux 原生支持创建符号链接".to_string())
     }
 }
 
