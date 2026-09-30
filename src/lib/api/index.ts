@@ -170,6 +170,14 @@ export const projectsApi = {
   },
 
   /** 移除项目注册；cleanup 为 true 时同时清理项目目录下已分发的技能文件 */
+  scanUnmanagedSkills(projectId: string): Promise<UnmanagedSkill[]> {
+    return invokeCommand('scan_project_unmanaged_skills', { projectId });
+  },
+
+  importSkills(projectId: string, selections: ImportSkillSelection[]): Promise<Skill[]> {
+    return invokeCommand('import_project_skills', { projectId, selections });
+  },
+
   removeProject(id: string, cleanup: boolean): Promise<void> {
     return invokeCommand('remove_skill_project', { id, cleanup });
   },

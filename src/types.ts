@@ -26,7 +26,7 @@ export interface ToolAdapter {
 }
 
 export interface SkillSource {
-  type: 'github' | 'skills_sh' | 'local' | 'url_zip';
+  type: 'github' | 'skills_sh' | 'local' | 'url_zip' | 'unknown';
   url?: string;
   repo?: string; // e.g. "anthropics/skills-kit"
   branch?: string;
@@ -222,15 +222,19 @@ export interface SkillUpdateInfo {
 /** 未受管技能（scan_unmanaged_skills，用于新手引导迁移） */
 export interface UnmanagedSkill {
   directory: string;
+  sourceDirectory: string;
+  relativePath: string;
   name: string;
   description?: string;
   foundIn: string[];
   path: string;
 }
 
-/** 导入已有技能时提交的启用选择（import_skills_from_apps；directory 为技能目录名，来自 UnmanagedSkill.directory） */
+/** 导入已有技能时提交的来源路径与中央库目录选择。 */
 export interface ImportSkillSelection {
   directory: string;
+  sourceDirectory: string;
+  relativePath: string;
   toolIds: ToolId[];
 }
 

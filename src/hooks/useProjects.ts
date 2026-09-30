@@ -1,12 +1,27 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { projectsApi } from '../lib/api';
 import { APP_STATE_KEY } from './useAppState';
-import type { AppState } from '../types';
+import type { AppState, ImportSkillSelection } from '../types';
 
 export function useAddSkillProject() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (path: string) => projectsApi.addProject(path),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: APP_STATE_KEY }),
+  });
+}
+
+export function useScanProjectSkills() {
+  return useMutation({
+    mutationFn: (projectId: string) => projectsApi.scanUnmanagedSkills(projectId),
+  });
+}
+
+export function useImportProjectSkills() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ projectId, selections }: { projectId: string; selections: ImportSkillSelection[] }) =>
+      projectsApi.importSkills(projectId, selections),
     onSettled: () => queryClient.invalidateQueries({ queryKey: APP_STATE_KEY }),
   });
 }

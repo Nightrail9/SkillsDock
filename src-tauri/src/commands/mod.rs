@@ -486,6 +486,42 @@ pub fn add_skill_project(state: State<'_, AppState>, path: String) -> CmdResult<
 }
 
 #[tauri::command]
+pub fn scan_project_unmanaged_skills(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> CmdResult<Vec<UnmanagedSkill>> {
+    SkillService::scan_unmanaged_project_skills(&state.db, &project_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn import_project_skills(
+    state: State<'_, AppState>,
+    project_id: String,
+    selections: Vec<ImportSkillSelection>,
+) -> CmdResult<Vec<Skill>> {
+    let records = SkillService::import_project_skills(&state.db, &project_id, selections)
+        .await
+        .map_err(|error| error.to_string())?;
+    let records: Vec<_> = records
+        .iter()
+        .map(|record| {
+            state
+                .db
+                .get_skill(&record.id)
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| format!("Imported skill disappeared: {}", record.id))
+        })
+        .collect::<CmdResult<_>>()?;
+    let tools = state.db.list_tool_adapters().map_err(|error| error.to_string())?;
+    let projects = state.db.list_skill_projects().map_err(|error| error.to_string())?;
+    Ok(records
+        .iter()
+        .map(|record| SkillService::record_to_skill(&state.db, record, &tools, &projects, false))
+        .collect())
+}
+
+#[tauri::command]
 pub fn remove_skill_project(
     state: State<'_, AppState>,
     id: String,

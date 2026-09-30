@@ -5,9 +5,19 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::fs::OpenOptions;
+use std::io::{copy, Read};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{OnceLock, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+#[cfg(unix)]
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+#[cfg(windows)]
+use std::os::windows::{
+    fs::OpenOptionsExt,
+    io::AsRawHandle,
+};
 
 use anyhow::{anyhow, Context, Result};
 use indexmap::IndexMap;
@@ -1302,6 +1312,358 @@ impl SkillService {
         config::expand_tilde(&tool.current_path)
     }
 
+    fn collect_unmanaged_skill_dirs(
+        root: &Path,
+        current: &Path,
+        skills: &mut Vec<(String, PathBuf)>,
+    ) -> Result<()> {
+        let entries = fs::read_dir(current)
+            .with_context(|| format!("读取工具技能目录失败: {}", current.display()))?;
+        for entry in entries {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            if !file_type.is_dir() || entry.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
+
+            let path = entry.path();
+            if path.join("SKILL.md").is_file() {
+                let relative_path = path
+                    .strip_prefix(root)?
+                    .components()
+                    .map(|component| component.as_os_str().to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("/");
+                skills.push((relative_path, path));
+            } else {
+                // 找到 SKILL.md 后不继续深入，避免把技能资源子目录当成独立技能。
+                Self::collect_unmanaged_skill_dirs(root, &path, skills)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn resolve_unmanaged_skill_source(
+        root: &Path,
+        relative_path: &str,
+        directory: &str,
+    ) -> Result<PathBuf> {
+        let directory = Self::require_valid_directory(directory)?;
+        let relative = Path::new(relative_path);
+        if relative_path.is_empty()
+            || relative_path.contains('\\')
+            || relative.is_absolute()
+            || relative
+                .components()
+                .any(|component| !matches!(component, Component::Normal(_)))
+            || relative.file_name().and_then(|name| name.to_str()) != Some(directory.as_str())
+        {
+            return Err(anyhow!("Invalid unmanaged skill path: {relative_path:?}"));
+        }
+
+        let canonical_root = root.canonicalize()?;
+        let lexical_source = root.join(relative);
+        if fs::symlink_metadata(&lexical_source)?.file_type().is_symlink() {
+            return Err(anyhow!(
+                "技能目录不能是符号链接: {}",
+                lexical_source.display()
+            ));
+        }
+        let source = lexical_source.canonicalize()?;
+        if !source.starts_with(&canonical_root)
+            || !source.is_dir()
+            || !source.join("SKILL.md").is_file()
+        {
+            return Err(anyhow!(
+                "Unmanaged skill is outside its tool directory or invalid"
+            ));
+        }
+        Self::ensure_no_symlink_entries(&source)?;
+        Ok(source)
+    }
+
+    fn ensure_no_symlink_entries(directory: &Path) -> Result<()> {
+        for entry in fs::read_dir(directory)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            if file_type.is_symlink() {
+                // copy_dir_recursive 会跟随链接，导入前拒绝，避免复制技能目录外的文件。
+                return Err(anyhow!(
+                    "技能目录包含符号链接，无法安全导入: {}",
+                    entry.path().display()
+                ));
+            }
+            if file_type.is_dir() {
+                Self::ensure_no_symlink_entries(&entry.path())?;
+            }
+        }
+        Ok(())
+    }
+
+    fn open_skill_file_without_following_links(path: &Path, canonical_root: &Path) -> Result<fs::File> {
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(target_os = "windows")]
+        options.custom_flags(0x0020_0000); // FILE_FLAG_OPEN_REPARSE_POINT
+        #[cfg(target_os = "linux")]
+        options.custom_flags(0x0002_0000); // O_NOFOLLOW
+        #[cfg(target_os = "macos")]
+        options.custom_flags(0x0000_0100); // O_NOFOLLOW
+        #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+        return Err(anyhow!("当前平台无法安全导入含文件的存量技能"));
+
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+        {
+            let file = options.open(path)?;
+            let metadata = file.metadata()?;
+            if !metadata.is_file() || metadata.file_type().is_symlink() {
+                return Err(anyhow!("技能文件不是普通文件: {}", path.display()));
+            }
+            let current_path = path.canonicalize()?;
+            if !current_path.starts_with(canonical_root) {
+                return Err(anyhow!("技能文件已移出工具目录: {}", path.display()));
+            }
+            #[cfg(unix)]
+            {
+                let current_metadata = fs::metadata(current_path)?;
+                if !Self::same_file_identity(&metadata, &current_metadata) {
+                    return Err(anyhow!("技能文件在打开期间发生变化: {}", path.display()));
+                }
+            }
+            #[cfg(windows)]
+            Self::ensure_open_file_within_root(&file, canonical_root)?;
+            Ok(file)
+        }
+    }
+
+    #[cfg(unix)]
+    fn same_file_identity(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+        #[cfg(unix)]
+        {
+            left.dev() == right.dev() && left.ino() == right.ino()
+        }
+    }
+
+    #[cfg(windows)]
+    fn ensure_open_file_within_root(file: &fs::File, canonical_root: &Path) -> Result<()> {
+        use std::os::windows::ffi::OsStringExt;
+
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetFinalPathNameByHandleW(
+                file: *mut std::ffi::c_void,
+                file_path: *mut u16,
+                file_path_size: u32,
+                flags: u32,
+            ) -> u32;
+        }
+
+        let mut buffer = vec![0_u16; 32_768];
+        let path_length = unsafe {
+            GetFinalPathNameByHandleW(
+                file.as_raw_handle().cast(),
+                buffer.as_mut_ptr(),
+                buffer.len() as u32,
+                0,
+            )
+        };
+        if path_length == 0 || path_length as usize >= buffer.len() {
+            return Err(anyhow!("无法确认已打开技能文件的实际路径"));
+        }
+
+        let opened_path = PathBuf::from(std::ffi::OsString::from_wide(
+            &buffer[..path_length as usize],
+        ));
+        let root = canonical_root.to_string_lossy().replace('/', "\\");
+        let opened = opened_path.to_string_lossy().replace('/', "\\");
+        let root = root.trim_end_matches('\\').to_lowercase();
+        let opened = opened.to_lowercase();
+        if opened != root && !opened.starts_with(&format!("{root}\\")) {
+            return Err(anyhow!("技能文件已移出工具目录: {}", opened_path.display()));
+        }
+        Ok(())
+    }
+
+    fn copy_skill_dir_without_symlinks(
+        source: &Path,
+        destination: &Path,
+        canonical_root: &Path,
+    ) -> Result<()> {
+        if fs::symlink_metadata(source)?.file_type().is_symlink() {
+            return Err(anyhow!("技能目录不能是符号链接: {}", source.display()));
+        }
+        let canonical_source = source.canonicalize()?;
+        if !canonical_source.starts_with(canonical_root) || !canonical_source.is_dir() {
+            return Err(anyhow!("技能目录已移出工具目录: {}", source.display()));
+        }
+        fs::create_dir_all(destination)?;
+        for entry in fs::read_dir(&canonical_source)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            if file_type.is_symlink() {
+                return Err(anyhow!(
+                    "技能目录包含符号链接，无法安全导入: {}",
+                    entry.path().display()
+                ));
+            }
+            let source_path = entry.path();
+            let destination_path = destination.join(entry.file_name());
+            if file_type.is_dir() {
+                Self::copy_skill_dir_without_symlinks(
+                    &source_path,
+                    &destination_path,
+                    canonical_root,
+                )?;
+            } else if file_type.is_file() {
+                let canonical_file = source_path.canonicalize()?;
+                if !canonical_file.starts_with(canonical_root) {
+                    return Err(anyhow!("技能文件已移出工具目录: {}", source_path.display()));
+                }
+                let mut source_file = Self::open_skill_file_without_following_links(
+                    &canonical_file,
+                    canonical_root,
+                )?;
+                let mut destination_file = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&destination_path)?;
+                copy(&mut source_file, &mut destination_file)?;
+            } else {
+                return Err(anyhow!(
+                    "技能目录包含无法安全复制的文件类型: {}",
+                    source_path.display()
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn hash_import_dir(directory: &Path, canonical_root: &Path) -> Result<String> {
+        use sha2::{Digest, Sha256};
+
+        let canonical_directory = directory.canonicalize()?;
+        if !Self::same_canonical_path(&canonical_directory, directory)
+            || !canonical_directory.starts_with(canonical_root)
+            || !canonical_directory.is_dir()
+        {
+            return Err(anyhow!("Skill directory changed during import"));
+        }
+
+        let mut entries = Vec::new();
+        Self::collect_import_entries(&canonical_directory, &canonical_directory, &mut entries)?;
+        entries.sort_by(|left, right| left.0.cmp(&right.0));
+
+        let mut hasher = Sha256::new();
+        for (relative_path, path, is_directory) in entries {
+            let relative_path = relative_path
+                .to_str()
+                .ok_or_else(|| anyhow!("Skill path contains an unsupported filename"))?;
+            #[cfg(windows)]
+            let relative_path = relative_path.replace('\\', "/");
+            #[cfg(not(windows))]
+            let relative_path = relative_path.to_string();
+            hasher.update((relative_path.len() as u64).to_le_bytes());
+            hasher.update(relative_path.as_bytes());
+            hasher.update([u8::from(is_directory)]);
+            if !is_directory {
+                let mut file =
+                    Self::open_skill_file_without_following_links(&path, canonical_root)?;
+                let mut contents = Vec::new();
+                file.read_to_end(&mut contents)?;
+                hasher.update((contents.len() as u64).to_le_bytes());
+                hasher.update(contents);
+            }
+        }
+
+        Ok(format!("{:x}", hasher.finalize()))
+    }
+
+    fn hash_directory_for_comparison(directory: &Path) -> Result<String> {
+        let canonical_directory = directory.canonicalize()?;
+        let canonical_root = canonical_directory
+            .parent()
+            .ok_or_else(|| anyhow!("Skill directory has no parent: {}", directory.display()))?;
+        Self::hash_import_dir(&canonical_directory, canonical_root)
+    }
+
+    fn same_canonical_path(left: &Path, right: &Path) -> bool {
+        #[cfg(windows)]
+        {
+            let normalize = |path: &Path| {
+                path.to_string_lossy()
+                    .replace('/', "\\")
+                    .trim_start_matches("\\\\?\\")
+                    .to_lowercase()
+            };
+            normalize(left) == normalize(right)
+        }
+        #[cfg(not(windows))]
+        {
+            left == right
+        }
+    }
+
+    fn collect_import_entries(
+        root: &Path,
+        current: &Path,
+        entries: &mut Vec<(PathBuf, PathBuf, bool)>,
+    ) -> Result<()> {
+        for entry in fs::read_dir(current)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            if file_type.is_symlink() {
+                return Err(anyhow!("Skill directory contains a symbolic link"));
+            }
+
+            let path = entry.path();
+            let is_directory = file_type.is_dir();
+            entries.push((
+                path.strip_prefix(root)?.to_path_buf(),
+                path.clone(),
+                is_directory,
+            ));
+            if is_directory {
+                Self::collect_import_entries(root, &path, entries)?;
+            } else if !file_type.is_file() {
+                return Err(anyhow!("Skill directory contains an unsupported file type"));
+            }
+        }
+        Ok(())
+    }
+
+    fn unique_import_directory(
+        source_directory: &str,
+        relative_path: &str,
+        occupied_directories: &HashSet<String>,
+    ) -> Result<String> {
+        use sha2::{Digest, Sha256};
+
+        let source_directory = Self::require_valid_directory(source_directory)?;
+        if !occupied_directories.contains(&source_directory.to_lowercase()) {
+            return Ok(source_directory);
+        }
+
+        let digest = Sha256::digest(relative_path.to_lowercase().as_bytes());
+        let digest = format!("{digest:x}");
+        let mut digest_length = 8;
+        loop {
+            let suffix = format!("--{}", &digest[..digest_length]);
+            let max_source_length = 255 - suffix.len();
+            let mut prefix = source_directory.clone();
+            while prefix.len() > max_source_length {
+                prefix.pop();
+            }
+            let candidate = format!("{prefix}{suffix}");
+            if !occupied_directories.contains(&candidate.to_lowercase()) {
+                return Ok(candidate);
+            }
+            if digest_length == digest.len() {
+                return Err(anyhow!("无法为重名技能生成唯一目录名: {relative_path}"));
+            }
+            digest_length = (digest_length + 2).min(digest.len());
+        }
+    }
+
     /// 过滤出真实存在且已启用的工具 id
     fn validated_tool_ids(db: &Database, tool_ids: &[String]) -> Result<Vec<String>> {
         let tools = db.list_tool_adapters()?;
@@ -1340,6 +1702,31 @@ impl SkillService {
                 source.display(),
                 dest.display()
             ));
+        }
+
+        // Importing a project-local skill can target the same files it was scanned from.
+        // Keep that directory in place instead of renaming it to a backup and copying identical data.
+        if dest.is_dir() && !Self::is_symlink(&dest) {
+            match (
+                Self::hash_directory_for_comparison(&source),
+                Self::hash_directory_for_comparison(&dest),
+            ) {
+                (Ok(source_hash), Ok(dest_hash)) if source_hash == dest_hash => {
+                    log::debug!(
+                        "Tool {} already contains the same skill content; skipping replacement: {}",
+                        tool.id,
+                        dest.display()
+                    );
+                    return Ok(());
+                }
+                (Err(err), _) | (_, Err(err)) => {
+                    log::debug!(
+                        "Could not compare existing skill content before deployment to {}: {err}",
+                        dest.display()
+                    );
+                }
+                _ => {}
+            }
         }
 
         if record.deploy_method == "copy" {
@@ -2350,6 +2737,10 @@ impl SkillService {
     /// 目录名未命中时，再用 SKILL.md frontmatter 的技能名匹配一次（安装目录名可能是仓库名而非技能注册名）。
     /// 返回 (repo "owner/repo", registry_id)。
     async fn match_registry_source(install_name: &str, skill_name: Option<&str>) -> Option<(String, String)> {
+        // Unit tests must stay offline; their source attribution is covered with local Git fixtures.
+        if cfg!(test) {
+            return None;
+        }
         // 测试环境（SKILLDOCK_TEST_HOME 隔离 home）不做联网匹配，保证测试离线确定性；
         // 与 config.rs 一致，仅 debug 构建响应该变量
         #[cfg(debug_assertions)]
@@ -3178,29 +3569,51 @@ impl SkillService {
 
         for tool in tools.iter().filter(|t| t.is_enabled) {
             let root = Self::tool_root(tool)?;
-            let entries = match fs::read_dir(&root) {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if !path.is_dir() {
+            if !root.is_dir() {
+                continue;
+            }
+            let managed_deployed_hashes: HashSet<String> = managed_skills
+                .values()
+                .filter(|skill| {
+                    !skill.is_project()
+                        && skill.enabled_tools.iter().any(|id| id == &tool.id)
+                        && root.join(&skill.directory).is_dir()
+                })
+                .filter_map(|skill| skill.content_hash.clone())
+                .collect();
+            let mut skill_dirs = Vec::new();
+            Self::collect_unmanaged_skill_dirs(&root, &root, &mut skill_dirs)?;
+            for (relative_path, path) in skill_dirs {
+                let dir_name = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or_default()
+                    .to_string();
+                if Self::require_valid_directory(&dir_name).is_err() {
                     continue;
                 }
-                let dir_name = entry.file_name().to_string_lossy().to_string();
-                if dir_name.starts_with('.') || managed_dirs.contains(&dir_name.to_lowercase()) {
+                if managed_dirs.contains(&dir_name.to_lowercase())
+                    && relative_path.eq_ignore_ascii_case(&dir_name)
+                {
+                    continue;
+                }
+                if !relative_path.eq_ignore_ascii_case(&dir_name)
+                    && Self::ensure_no_symlink_entries(&path).is_ok()
+                    && Self::compute_dir_hash(&path)
+                        .map(|hash| managed_deployed_hashes.contains(&hash))
+                        .unwrap_or(false)
+                {
                     continue;
                 }
                 let skill_md = path.join("SKILL.md");
-                if !skill_md.exists() {
-                    continue;
-                }
                 let (name, description) = Self::read_skill_name_desc(&skill_md, &dir_name);
                 unmanaged
-                    .entry(dir_name.clone())
+                    .entry(relative_path.to_lowercase())
                     .and_modify(|s| s.found_in.push(tool.id.clone()))
                     .or_insert(UnmanagedSkill {
-                        directory: dir_name,
+                        directory: dir_name.clone(),
+                        source_directory: dir_name,
+                        relative_path,
                         name,
                         description,
                         found_in: vec![tool.id.clone()],
@@ -3209,11 +3622,330 @@ impl SkillService {
             }
         }
 
-        Ok(unmanaged.into_values().collect())
+        let mut skills = unmanaged.into_values().collect::<Vec<_>>();
+        skills.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+        let mut occupied_dirs = managed_dirs;
+        for skill in &mut skills {
+            skill.directory = Self::unique_import_directory(
+                &skill.source_directory,
+                &skill.relative_path,
+                &occupied_dirs,
+            )?;
+            occupied_dirs.insert(skill.directory.to_lowercase());
+        }
+        Ok(skills)
     }
 
     /// 从工具目录导入未受管技能到中央库
     /// git 识别失败时，按目录名（必要时退回 SKILL.md 技能名）在 skills.sh 注册表精确匹配原作者仓库（联网；失败/无匹配 → 本地技能）
+    /// Scans the selected project's enabled tool directories for unmanaged skills.
+    pub fn scan_unmanaged_project_skills(
+        db: &Database,
+        project_id: &str,
+    ) -> Result<Vec<UnmanagedSkill>> {
+        let _guard = state_read_guard();
+        let project_number = project_id
+            .parse::<i64>()
+            .map_err(|_| anyhow!("Invalid project id: {project_id}"))?;
+        let project = db
+            .get_skill_project(project_number)?
+            .ok_or_else(|| anyhow!("Project is not registered: {project_id}"))?;
+        let project_path = Path::new(&project.2);
+        if !project_path.is_dir() {
+            return Err(anyhow!(
+                "Project directory is unavailable: {}",
+                project_path.display()
+            ));
+        }
+
+        let records = db.get_all_skills()?;
+        let managed_project_destinations: HashSet<String> = records
+            .values()
+            .filter(|skill| skill.project_path.as_deref() == Some(project.2.as_str()))
+            .flat_map(|skill| {
+                skill
+                    .enabled_tools
+                    .iter()
+                    .map(|tool_id| format!("{}:{}", tool_id.to_lowercase(), skill.directory.to_lowercase()))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let managed_project_sources: HashSet<String> = records
+            .values()
+            .filter(|skill| {
+                skill.project_path.as_deref() == Some(project.2.as_str())
+                    && skill.source_type == "local"
+            })
+            .flat_map(|skill| {
+                let Some(relative_path) = skill.source_subpath.as_deref() else {
+                    return Vec::new();
+                };
+                skill
+                    .enabled_tools
+                    .iter()
+                    .map(|tool_id| format!("{}:{}", tool_id.to_lowercase(), relative_path.to_lowercase()))
+                    .collect()
+            })
+            .collect();
+        let managed_project_hashes: HashSet<String> = records
+            .values()
+            .filter(|skill| skill.project_path.as_deref() == Some(project.2.as_str()))
+            .filter_map(|skill| skill.content_hash.clone())
+            .collect();
+        let mut occupied_dirs: HashSet<String> = records
+            .values()
+            .map(|skill| skill.directory.to_lowercase())
+            .collect();
+        let tools = db.list_tool_adapters()?;
+        let mut unmanaged: HashMap<String, UnmanagedSkill> = HashMap::new();
+
+        for tool in tools.iter().filter(|tool| tool.is_enabled) {
+            let Some(root) = Self::project_tool_root(tool, &project.2) else {
+                continue;
+            };
+            if !root.is_dir() {
+                continue;
+            }
+
+            let mut skill_dirs = Vec::new();
+            Self::collect_unmanaged_skill_dirs(&root, &root, &mut skill_dirs)?;
+            for (relative_path, path) in skill_dirs {
+                let source_key = format!("{}:{}", tool.id.to_lowercase(), relative_path.to_lowercase());
+                let destination_key = format!(
+                    "{}:{}",
+                    tool.id.to_lowercase(),
+                    relative_path.to_lowercase()
+                );
+                let source_directory = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or_default()
+                    .to_string();
+                if managed_project_sources.contains(&source_key)
+                    || Self::require_valid_directory(&source_directory).is_err()
+                    || managed_project_destinations.contains(&destination_key)
+                {
+                    continue;
+                }
+
+                let content_hash = Self::compute_dir_hash(&path).ok();
+                if content_hash
+                    .as_ref()
+                    .is_some_and(|hash| managed_project_hashes.contains(hash))
+                {
+                    continue;
+                }
+                let content_key = content_hash.unwrap_or_else(|| path.display().to_string());
+                let group_key = format!("{}:{content_key}", relative_path.to_lowercase());
+                if let Some(existing) = unmanaged.get_mut(&group_key) {
+                    if !existing.found_in.contains(&tool.id) {
+                        existing.found_in.push(tool.id.clone());
+                    }
+                    continue;
+                }
+
+                let skill_md = path.join("SKILL.md");
+                let (name, description) = Self::read_skill_name_desc(&skill_md, &source_directory);
+                unmanaged.insert(
+                    group_key,
+                    UnmanagedSkill {
+                        directory: source_directory.clone(),
+                        source_directory,
+                        relative_path,
+                        name,
+                        description,
+                        found_in: vec![tool.id.clone()],
+                        path: path.display().to_string(),
+                    },
+                );
+            }
+        }
+
+        let mut skills = unmanaged.into_values().collect::<Vec<_>>();
+        skills.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+        for skill in &mut skills {
+            let uniqueness_path = format!("{}:{}", skill.found_in.join(","), skill.relative_path);
+            skill.directory = Self::unique_import_directory(
+                &skill.source_directory,
+                &uniqueness_path,
+                &occupied_dirs,
+            )?;
+            occupied_dirs.insert(skill.directory.to_lowercase());
+        }
+        Ok(skills)
+    }
+
+    /// Imports confirmed project skills into the central library and associates them with the project.
+    pub async fn import_project_skills(
+        db: &Database,
+        project_id: &str,
+        selections: Vec<ImportSkillSelection>,
+    ) -> Result<Vec<SkillRecord>> {
+        let project_number = project_id
+            .parse::<i64>()
+            .map_err(|_| anyhow!("Invalid project id: {project_id}"))?;
+        let project = db
+            .get_skill_project(project_number)?
+            .ok_or_else(|| anyhow!("Project is not registered: {project_id}"))?;
+        if !Path::new(&project.2).is_dir() {
+            return Err(anyhow!("Project directory is unavailable: {}", project.2));
+        }
+
+        let tools = db.list_tool_adapters()?;
+        let mut prepared = Vec::new();
+        for selection in selections {
+            let install_name = Self::require_valid_directory(&selection.directory)?;
+            let source_directory = Self::require_valid_directory(&selection.source_directory)?;
+            let selected_tool_ids = Self::validated_tool_ids(db, &selection.tool_ids)?;
+            if selected_tool_ids.is_empty() {
+                return Err(anyhow!(
+                    "Project skill import has no enabled source tools: {install_name}"
+                ));
+            }
+
+            let mut source = None;
+            for tool in tools
+                .iter()
+                .filter(|tool| selected_tool_ids.contains(&tool.id))
+            {
+                let Some(root) = Self::project_tool_root(tool, &project.2) else {
+                    continue;
+                };
+                if !root.is_dir() {
+                    continue;
+                }
+                let canonical_root = root.canonicalize()?;
+                match Self::resolve_unmanaged_skill_source(
+                    &canonical_root,
+                    &selection.relative_path,
+                    &source_directory,
+                ) {
+                    Ok(path) => {
+                        source = Some((path, canonical_root));
+                        break;
+                    }
+                    Err(err) => log::warn!(
+                        "Skipping project skill source {} for {}: {err}",
+                        selection.relative_path,
+                        tool.id
+                    ),
+                }
+            }
+            let (source, canonical_root) = source.ok_or_else(|| {
+                anyhow!(
+                    "Project skill was not found in its selected tool directories: {}",
+                    selection.relative_path
+                )
+            })?;
+
+            // Only inspect the skill directory's own .git directory. Looking above it could
+            // incorrectly attribute every project skill to the host project's repository.
+            let git_info = git_detect::detect_github_source(&source);
+            let registry_match = if git_info.is_none() {
+                let skill_name = Self::parse_skill_metadata_static(&source.join("SKILL.md"))
+                    .ok()
+                    .and_then(|metadata| metadata.name);
+                Self::match_registry_source(&install_name, skill_name.as_deref()).await
+            } else {
+                None
+            };
+            prepared.push((
+                selection,
+                install_name,
+                source_directory,
+                selected_tool_ids,
+                source,
+                canonical_root,
+                git_info,
+                registry_match,
+            ));
+        }
+
+        let _guard = state_write_guard();
+        let project = db
+            .get_skill_project(project_number)?
+            .ok_or_else(|| anyhow!("Project is not registered: {project_id}"))?;
+        if !Path::new(&project.2).is_dir() {
+            return Err(anyhow!("Project directory is unavailable: {}", project.2));
+        }
+
+        let mut imported = Vec::new();
+        for (
+            selection,
+            install_name,
+            source_directory,
+            selected_tool_ids,
+            source,
+            canonical_root,
+            git_info,
+            registry_match,
+        ) in prepared
+        {
+            // Stage through a no-follow copy so source changes between validation and install
+            // cannot make the central library copy follow a newly introduced symlink.
+            let staging = tempfile::tempdir()?;
+            let staged_source = staging.path().join(&source_directory);
+            let source_hash_before = Self::hash_import_dir(&source, &canonical_root)?;
+            Self::copy_skill_dir_without_symlinks(&source, &staged_source, &canonical_root)?;
+            let staging_root = staging.path().canonicalize()?;
+            let staged_hash = Self::hash_import_dir(&staged_source, &staging_root)?;
+            let source_hash_after = Self::hash_import_dir(&source, &canonical_root)?;
+            if source_hash_before != staged_hash || source_hash_before != source_hash_after {
+                return Err(anyhow!(
+                    "Project skill changed while being imported: {}",
+                    selection.relative_path
+                ));
+            }
+
+            imported.push(Self::install_dir_to_project(
+                db,
+                &project,
+                &staged_source,
+                &install_name,
+                ProjectInstallMeta {
+                    directory: install_name.clone(),
+                    source_type: if git_info.is_some() {
+                        "github".to_string()
+                    } else if registry_match.is_some() {
+                        "skills_sh".to_string()
+                    } else {
+                        "unknown".to_string()
+                    },
+                    source_repo: git_info
+                        .as_ref()
+                        .map(|info| info.repo.clone())
+                        .or_else(|| registry_match.as_ref().map(|(repo, _)| repo.clone())),
+                    source_branch: git_info.as_ref().and_then(|info| info.branch.clone()),
+                    source_subpath: None,
+                    source_author: git_info
+                        .as_ref()
+                        .and_then(|info| info.repo.split('/').next().map(str::to_string))
+                        .or_else(|| {
+                            registry_match
+                                .as_ref()
+                                .and_then(|(repo, _)| repo.split('/').next().map(str::to_string))
+                        }),
+                    source_registry_id: registry_match
+                        .as_ref()
+                        .map(|(_, registry_id)| registry_id.clone()),
+                    source_url: git_info.as_ref().map(|info| info.url.clone()).or_else(|| {
+                        registry_match
+                            .as_ref()
+                            .map(|(repo, _)| format!("https://github.com/{repo}"))
+                    }),
+                    source_github_detected: git_info.is_some(),
+                    current_commit: git_info.as_ref().and_then(|info| info.commit.clone()),
+                    display_name: None,
+                    input_description: None,
+                    tags: vec![],
+                    enabled_tools: selected_tool_ids,
+                    deploy_method: "auto".to_string(),
+                },
+            )?);
+        }
+        Ok(imported)
+    }
+
     pub async fn import_from_apps(
         db: &Database,
         selections: Vec<ImportSkillSelection>,
@@ -3232,17 +3964,35 @@ impl SkillService {
                 };
 
                 // 在启用工具的目录中查找源
-                let mut source_path: Option<PathBuf> = None;
+                let mut source_path: Option<(PathBuf, PathBuf)> = None;
+                let mut source_error = None;
                 for tool in tools.iter().filter(|t| t.is_enabled) {
-                    let candidate = Self::tool_root(tool)?.join(&dir_name);
-                    if candidate.is_dir() && candidate.join("SKILL.md").is_file() {
-                        source_path = Some(candidate);
-                        break;
+                    let root = Self::tool_root(tool)?;
+                    if !root.is_dir() {
+                        continue;
+                    }
+                    let canonical_root = root.canonicalize()?;
+                    let candidate_path = canonical_root.join(&selection.relative_path);
+                    if !candidate_path.exists() && !Self::is_symlink(&candidate_path) {
+                        continue;
+                    }
+                    match Self::resolve_unmanaged_skill_source(
+                        &canonical_root,
+                        &selection.relative_path,
+                        &selection.source_directory,
+                    ) {
+                        Ok(candidate) => {
+                            source_path = Some((candidate, canonical_root));
+                            break;
+                        }
+                        Err(err) => source_error = Some(err),
                     }
                 }
-                let Some(source) = source_path else {
-                    log::warn!("跳过导入 '{dir_name}'：未在任何启用工具目录中找到");
-                    continue;
+                let Some((source, canonical_root)) = source_path else {
+                    let reason = source_error
+                        .map(|err| err.to_string())
+                        .unwrap_or_else(|| "未在已启用工具目录中找到该技能".to_string());
+                    return Err(anyhow!("无法导入存量技能 '{dir_name}'：{reason}"));
                 };
 
                 let git_info = git_detect::detect_github_source(&source);
@@ -3254,15 +4004,23 @@ impl SkillService {
                 } else {
                     None
                 };
-                prepared.push((selection, dir_name, source, git_info, registry_match));
+                prepared.push((
+                    selection,
+                    dir_name,
+                    source,
+                    canonical_root,
+                    git_info,
+                    registry_match,
+                ));
             }
         }
 
         let _guard = state_write_guard();
         let library = Self::get_library_dir(db)?;
+        fs::create_dir_all(&library)?;
         let mut imported = Vec::new();
 
-        for (selection, dir_name, source, git_info, registry_match) in prepared {
+        for (selection, dir_name, source, canonical_root, git_info, registry_match) in prepared {
             // 已受管 → 仅补充工具分发
             let existing_skills = db.get_all_skills()?;
             if let Some(existing) = existing_skills
@@ -3285,7 +4043,21 @@ impl SkillService {
 
             let dest = library.join(&dir_name);
             if !dest.exists() {
-                Self::copy_dir_recursive(&source, &dest)?;
+                let staging = tempfile::Builder::new()
+                    .prefix(".skill-import-")
+                    .tempdir_in(&library)?;
+                let staged_skill = staging.path().join(&dir_name);
+                let canonical_source = source.canonicalize()?;
+                if !canonical_source.starts_with(&canonical_root) {
+                    return Err(anyhow!("技能目录已移出工具目录: {}", source.display()));
+                }
+                Self::copy_skill_dir_without_symlinks(
+                    &canonical_source,
+                    &staged_skill,
+                    &canonical_root,
+                )?;
+                fs::rename(&staged_skill, &dest)
+                    .with_context(|| format!("将已暂存技能写入中央库失败: {}", dest.display()))?;
             }
 
             let skill_md = dest.join("SKILL.md");
@@ -4188,6 +4960,98 @@ mod tests {
         );
     }
 
+    #[test]
+    fn resolve_unmanaged_skill_source_accepts_nested_paths_and_rejects_traversal() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("skills");
+        let skill_dir = root.join("category").join("my-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(skill_dir.join("SKILL.md"), "# skill").unwrap();
+
+        let resolved =
+            SkillService::resolve_unmanaged_skill_source(&root, "category/my-skill", "my-skill")
+                .unwrap();
+        assert_eq!(resolved, skill_dir.canonicalize().unwrap());
+        assert!(
+            SkillService::resolve_unmanaged_skill_source(&root, "../my-skill", "my-skill").is_err()
+        );
+    }
+
+    #[test]
+    fn unmanaged_skill_import_rejects_symlinks_and_duplicate_directory_names() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("skills");
+        let skill_dir = root.join("category").join("my-skill");
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(skill_dir.join("SKILL.md"), "# skill").unwrap();
+        fs::write(outside.join("private.txt"), "private").unwrap();
+
+        let link = skill_dir.join("linked-content");
+        if SkillService::create_symlink(&outside, &link).is_ok() {
+            assert!(SkillService::resolve_unmanaged_skill_source(
+                &root,
+                "category/my-skill",
+                "my-skill"
+            )
+            .is_err());
+            assert!(SkillService::copy_skill_dir_without_symlinks(
+                &skill_dir,
+                &temp.path().join("copied-skill"),
+                &root.canonicalize().unwrap(),
+            )
+            .is_err());
+        }
+
+        let mut occupied = HashSet::from(["same-name".to_string()]);
+        let first =
+            SkillService::unique_import_directory("same-name", "first/same-name", &occupied)
+                .unwrap();
+        occupied.insert(first.to_lowercase());
+        let second =
+            SkillService::unique_import_directory("same-name", "second/same-name", &occupied)
+                .unwrap();
+        assert_ne!(first, second);
+        assert!(SkillService::require_valid_directory(&first).is_ok());
+        assert!(SkillService::require_valid_directory(&second).is_ok());
+    }
+
+    #[test]
+    fn hash_import_dir_includes_hidden_files_copied_during_import() {
+        let temp = tempfile::tempdir().unwrap();
+        let skill_dir = temp.path().join("skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(skill_dir.join("SKILL.md"), "# skill").unwrap();
+        fs::write(skill_dir.join(".private"), "first").unwrap();
+        let root = temp.path().canonicalize().unwrap();
+
+        let canonical_skill_dir = skill_dir.canonicalize().unwrap();
+        let first_hash = SkillService::hash_import_dir(&canonical_skill_dir, &root).unwrap();
+        fs::write(skill_dir.join(".private"), "second").unwrap();
+        let second_hash = SkillService::hash_import_dir(&canonical_skill_dir, &root).unwrap();
+
+        assert_ne!(first_hash, second_hash);
+    }
+
+    #[test]
+    fn hash_import_dir_encodes_file_boundaries_unambiguously() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("first");
+        let second = temp.path().join("second");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        fs::write(first.join("a"), b"x\0b\0y").unwrap();
+        fs::write(second.join("a"), b"x").unwrap();
+        fs::write(second.join("b"), b"y").unwrap();
+        let root = temp.path().canonicalize().unwrap();
+
+        let first_hash = SkillService::hash_import_dir(&first.canonicalize().unwrap(), &root).unwrap();
+        let second_hash = SkillService::hash_import_dir(&second.canonicalize().unwrap(), &root).unwrap();
+
+        assert_ne!(first_hash, second_hash);
+    }
+
     // ========== compute_dir_hash ==========
 
     #[test]
@@ -5010,6 +5874,169 @@ mod tests {
         let ns = SkillService::project_storage_namespace("D:\\01-Projects\\demo");
         assert!(!ns.contains(':'), "命名空间不应含冒号: {ns}");
         assert!(!ns.contains('\\'), "命名空间不应含反斜杠: {ns}");
+    }
+
+    #[tokio::test]
+    async fn scan_unmanaged_project_skills_detects_codex_project_skills() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("library");
+        fs::create_dir_all(&library).unwrap();
+        let db = memory_db_with_library(&library);
+        let project_root = temp.path().join("project");
+        let skill_dir = project_root.join(".codex/skills/codex-review");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::create_dir_all(skill_dir.join(".git")).unwrap();
+        fs::write(
+            skill_dir.join(".git/config"),
+            "[remote \"origin\"]\n\turl = https://github.com/example/codex-review.git\n",
+        )
+        .unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: codex-review\ndescription: Review Codex changes\n---\n",
+        )
+        .unwrap();
+
+        let home = config::get_home_dir().expect("home");
+        let codex = test_tool_under_home("codex-test", &home, ".codex/skills");
+        db.insert_tool_adapter(&codex, 0).unwrap();
+        let project_id = db
+            .add_skill_project("project", &project_root.display().to_string())
+            .unwrap()
+            .to_string();
+
+        let skills = SkillService::scan_unmanaged_project_skills(&db, &project_id).unwrap();
+
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].directory, "codex-review");
+        assert_eq!(skills[0].name, "codex-review");
+        assert_eq!(skills[0].found_in, vec!["codex-test"]);
+        assert_eq!(skills[0].relative_path, "codex-review");
+
+        RENAME_FAIL_AFTER.with(|counter| counter.set(Some(1)));
+        let import_result = SkillService::import_project_skills(
+            &db,
+            &project_id,
+            vec![ImportSkillSelection {
+                directory: skills[0].directory.clone(),
+                source_directory: skills[0].source_directory.clone(),
+                relative_path: skills[0].relative_path.clone(),
+                tool_ids: skills[0].found_in.clone(),
+            }],
+        )
+        .await;
+        RENAME_FAIL_AFTER.with(|counter| counter.set(None));
+        let imported = import_result.unwrap();
+        assert_eq!(imported.len(), 1);
+        assert_eq!(imported[0].scope, SKILL_SCOPE_PROJECT);
+        assert_eq!(imported[0].source_type, "github");
+        assert_eq!(
+            imported[0].source_repo.as_deref(),
+            Some("example/codex-review")
+        );
+        assert!(project_root
+            .join(".codex/skills/codex-review/SKILL.md")
+            .is_file());
+        assert_eq!(SkillService::api_projects(&db).unwrap()[0].skill_count, 1);
+        assert!(
+            SkillService::scan_unmanaged_project_skills(&db, &project_id)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn scan_unmanaged_project_skills_skips_imported_sources_with_renamed_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("library");
+        fs::create_dir_all(&library).unwrap();
+        let db = memory_db_with_library(&library);
+        let project_root = temp.path().join("project");
+        let skill_dir = project_root.join(".codex/skills/codex-review");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(skill_dir.join("SKILL.md"), "---\nname: codex-review\n---\n").unwrap();
+
+        let home = config::get_home_dir().expect("home");
+        let codex = test_tool_under_home("codex-test", &home, ".codex/skills");
+        db.insert_tool_adapter(&codex, 0).unwrap();
+        let project_id = db
+            .add_skill_project("project", &project_root.display().to_string())
+            .unwrap()
+            .to_string();
+        db.save_skill(&test_skill_record(
+            "global:codex-review",
+            "codex-review",
+            SKILL_SCOPE_GLOBAL,
+            None,
+        ))
+        .unwrap();
+
+        let discovered = SkillService::scan_unmanaged_project_skills(&db, &project_id).unwrap();
+        assert_eq!(discovered.len(), 1);
+        assert_ne!(discovered[0].directory, discovered[0].source_directory);
+        let imported = SkillService::import_project_skills(
+            &db,
+            &project_id,
+            vec![ImportSkillSelection {
+                directory: discovered[0].directory.clone(),
+                source_directory: discovered[0].source_directory.clone(),
+                relative_path: discovered[0].relative_path.clone(),
+                tool_ids: discovered[0].found_in.clone(),
+            }],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(imported[0].source_type, "unknown");
+
+        assert!(
+            SkillService::scan_unmanaged_project_skills(&db, &project_id)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn scan_unmanaged_project_skills_keeps_nested_skill_with_managed_basename() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("library");
+        fs::create_dir_all(&library).unwrap();
+        let db = memory_db_with_library(&library);
+        let project_root = temp.path().join("project");
+        let skills_root = project_root.join(".codex/skills");
+        let managed_dir = skills_root.join("same-name");
+        let nested_dir = skills_root.join("category/same-name");
+        fs::create_dir_all(&managed_dir).unwrap();
+        fs::create_dir_all(&nested_dir).unwrap();
+        fs::write(managed_dir.join("SKILL.md"), "# managed").unwrap();
+        fs::write(nested_dir.join("SKILL.md"), "# nested").unwrap();
+
+        let home = config::get_home_dir().expect("home");
+        let codex = test_tool_under_home("codex-test", &home, ".codex/skills");
+        db.insert_tool_adapter(&codex, 0).unwrap();
+        let project_id = db
+            .add_skill_project("project", &project_root.display().to_string())
+            .unwrap()
+            .to_string();
+        let mut managed = test_skill_record(
+            "project:same-name",
+            "same-name",
+            SKILL_SCOPE_PROJECT,
+            Some(&project_root.display().to_string()),
+        );
+        managed.project_id = Some(project_id);
+        managed.source_type = "local".to_string();
+        managed.enabled_tools = vec!["codex-test".to_string()];
+        db.save_skill(&managed).unwrap();
+
+        let discovered = SkillService::scan_unmanaged_project_skills(
+            &db,
+            managed.project_id.as_deref().unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(discovered.len(), 1);
+        assert_eq!(discovered[0].relative_path, "category/same-name");
     }
 
     #[test]

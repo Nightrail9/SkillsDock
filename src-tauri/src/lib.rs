@@ -62,6 +62,8 @@ pub fn run() {
             commands::toggle_tool_enabled,
             commands::get_skill_projects,
             commands::add_skill_project,
+            commands::scan_project_unmanaged_skills,
+            commands::import_project_skills,
             commands::remove_skill_project,
             commands::check_project_paths,
             commands::add_skill_repo,

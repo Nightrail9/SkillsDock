@@ -52,7 +52,8 @@ echo "==> 安装前端依赖（Linux 原生二进制，不复用宿主机 node_m
 npm ci --no-audit --no-fund
 
 echo "==> 构建 Linux $ARCH（deb / rpm / AppImage）"
-npm run tauri:build -- --bundles deb,rpm,appimage
+TAURI_ARGS=(--bundles deb,rpm,appimage)
+npm run tauri:build -- "${TAURI_ARGS[@]}"
 BUNDLE_DIR="$CARGO_TARGET_DIR/release/bundle"
 
 mkdir -p "$OUT_DIR"

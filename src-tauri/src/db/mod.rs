@@ -264,6 +264,14 @@ impl Database {
         config::expand_tilde(path).map(|p| p.is_dir()).unwrap_or(false)
     }
 
+    fn builtin_default_path(tool: &BuiltinToolSeed) -> String {
+        if cfg!(windows) && tool.id == "hermes" {
+            "~/AppData/Local/hermes/skills".to_string()
+        } else {
+            tool.default_path.to_string()
+        }
+    }
+
     /// 首次启动写入内置工具种子（仅当表为空）；未检测到目录的工具默认停用
     fn seed_builtin_tools(&self) -> Result<usize, AppError> {
         if !self.list_tool_adapters()?.is_empty() {
@@ -272,7 +280,8 @@ impl Database {
         let conn = lock_conn!(self.conn);
         let mut count = 0;
         for (index, tool) in BUILTIN_TOOLS.iter().enumerate() {
-            let enabled = Self::tool_path_detected(tool.default_path);
+            let default_path = Self::builtin_default_path(tool);
+            let enabled = Self::tool_path_detected(&default_path);
             conn.execute(
                 "INSERT OR IGNORE INTO tool_adapters
                  (id, name, vendor, description, default_path, current_path, is_builtin, is_enabled, color, sort_order)
@@ -282,7 +291,7 @@ impl Database {
                     tool.name,
                     tool.vendor,
                     tool.description,
-                    tool.default_path,
+                    default_path,
                     enabled as i64,
                     tool.color,
                     index as i64
@@ -294,12 +303,12 @@ impl Database {
         Ok(count)
     }
 
-    /// 一次性校正存量库（PRAGMA user_version 迁移标记，v1）：
+    /// 一次性校正存量库（PRAGMA user_version 迁移标记）：
     /// 移除已下线的内置工具（gemini-cli）；
     /// 未检测到技能目录的内置工具置为停用（用户手动启用过的检测到工具不受影响）。
     /// 整个校正在一个事务内完成；历史 tools_reconcile_v2 标记视为已迁移。
     fn reconcile_builtin_tools(&self) -> Result<(), AppError> {
-        const SCHEMA_VERSION: i64 = 1;
+        const SCHEMA_VERSION: i64 = 2;
         {
             let conn = lock_conn!(self.conn);
             let user_version: i64 = conn
@@ -354,6 +363,15 @@ impl Database {
                     .map_err(|e| AppError::Database(e.to_string()))?;
                 }
             }
+            #[cfg(windows)]
+            tx.execute(
+                "UPDATE tool_adapters
+                 SET default_path = ?1,
+                     current_path = CASE WHEN current_path = ?2 THEN ?1 ELSE current_path END
+                 WHERE id = 'hermes' AND is_builtin = 1 AND default_path = ?2",
+                params!["~/AppData/Local/hermes/skills", "~/.hermes/skills"],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)
                 .map_err(|e| AppError::Database(e.to_string()))?;
             tx.commit().map_err(|e| AppError::Database(e.to_string()))?;
@@ -635,6 +653,116 @@ impl Database {
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
         Ok(count)
+    }
+}
+
+#[cfg(test)]
+mod hermes_path_tests {
+    use super::Database;
+    use crate::services::skill_service::SkillService;
+    use std::fs;
+
+    #[cfg(windows)]
+    #[test]
+    fn hermes_uses_windows_local_app_data_skills_path() {
+        let db = Database::memory().expect("create in-memory database");
+        let hermes = db
+            .list_tool_adapters()
+            .expect("list tool adapters")
+            .into_iter()
+            .find(|tool| tool.id == "hermes")
+            .expect("Hermes adapter should be seeded");
+
+        assert_eq!(hermes.default_path, "~/AppData/Local/hermes/skills");
+        assert_eq!(hermes.current_path, "~/AppData/Local/hermes/skills");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn hermes_path_migration_moves_legacy_default_path() {
+        let db = Database::memory().expect("create in-memory database");
+        {
+            let conn = db.conn.lock().expect("lock database connection");
+            conn.execute(
+                "UPDATE tool_adapters SET default_path = '~/.hermes/skills', current_path = '~/.hermes/skills' WHERE id = 'hermes'",
+                [],
+            )
+            .expect("restore legacy Hermes path");
+            conn.pragma_update(None, "user_version", 1)
+                .expect("set legacy schema version");
+        }
+
+        db.reconcile_builtin_tools().expect("migrate Hermes path");
+        let hermes = db
+            .list_tool_adapters()
+            .expect("list tool adapters")
+            .into_iter()
+            .find(|tool| tool.id == "hermes")
+            .expect("Hermes adapter should remain available");
+
+        assert_eq!(hermes.default_path, "~/AppData/Local/hermes/skills");
+        assert_eq!(hermes.current_path, "~/AppData/Local/hermes/skills");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn hermes_path_migration_preserves_custom_path() {
+        let db = Database::memory().expect("create in-memory database");
+        {
+            let conn = db.conn.lock().expect("lock database connection");
+            conn.execute(
+                "UPDATE tool_adapters SET default_path = '~/.hermes/skills', current_path = 'D:/my-hermes-skills' WHERE id = 'hermes'",
+                [],
+            )
+            .expect("restore legacy Hermes paths");
+            conn.pragma_update(None, "user_version", 1)
+                .expect("set legacy schema version");
+        }
+
+        db.reconcile_builtin_tools().expect("migrate Hermes path");
+        let hermes = db
+            .list_tool_adapters()
+            .expect("list tool adapters")
+            .into_iter()
+            .find(|tool| tool.id == "hermes")
+            .expect("Hermes adapter should remain available");
+
+        assert_eq!(hermes.default_path, "~/AppData/Local/hermes/skills");
+        assert_eq!(hermes.current_path, "D:/my-hermes-skills");
+    }
+
+    #[test]
+    fn unmanaged_scan_finds_skills_in_an_enabled_hermes_directory() {
+        let db = Database::memory().expect("create in-memory database");
+        let root = tempfile::tempdir().expect("create temporary Hermes directory");
+        let skill_dir = root
+            .path()
+            .join("skills")
+            .join("category")
+            .join("existing-skill");
+        fs::create_dir_all(&skill_dir).expect("create unmanaged skill directory");
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: Existing Skill\n---\n",
+        )
+        .expect("write SKILL.md");
+
+        for mut tool in db.list_tool_adapters().expect("list tool adapters") {
+            tool.is_enabled = tool.id == "hermes";
+            if tool.id == "hermes" {
+                tool.current_path = root.path().join("skills").display().to_string();
+            }
+            db.update_tool_adapter(&tool)
+                .expect("configure tool adapter for isolated scan");
+        }
+
+        let scanned = SkillService::scan_unmanaged(&db).expect("scan unmanaged skills");
+        let skill = scanned
+            .iter()
+            .find(|skill| skill.directory == "existing-skill")
+            .expect("scan should find the existing Hermes skill");
+        assert_eq!(skill.found_in, vec!["hermes"]);
+        assert_eq!(skill.relative_path, "category/existing-skill");
     }
 }
 

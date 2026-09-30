@@ -396,7 +396,12 @@ pub struct SkillsShSearchResult {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UnmanagedSkill {
+    /// 导入后在 SkillDock 中使用的唯一目录名。
     pub directory: String,
+    /// 来源工具目录中的原始技能目录名。
+    pub source_directory: String,
+    /// 相对于工具技能根目录的路径，支持分类目录中的嵌套技能。
+    pub relative_path: String,
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -409,7 +414,11 @@ pub struct UnmanagedSkill {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportSkillSelection {
+    /// 导入后在中央技能库中使用的目录名。
     pub directory: String,
+    /// 来源工具目录中的原始技能目录名。
+    pub source_directory: String,
+    pub relative_path: String,
     #[serde(default)]
     pub tool_ids: Vec<String>,
 }

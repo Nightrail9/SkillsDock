@@ -28,6 +28,8 @@ function SourceChannelIcon({ skill }: { skill: Skill }) {
         return `来源: skills.sh 社区${source.repo ? ` (${source.repo})` : ''}`;
       case 'url_zip':
         return '来源: URL 直链安装';
+      case 'unknown':
+        return '来源未知';
       default:
         return source.isGitHubDetectedFromLocal
           ? `来源: 本地导入（关联 GitHub ${source.repo ?? ''}）`
@@ -146,6 +148,12 @@ const SkillCardComponent: React.FC<SkillCardProps> = ({
                     本地技能
                   </span>
                 )
+              )}
+
+              {skill.source.type === 'unknown' && (
+                <span className="text-[10px] text-slate-600 bg-slate-100 px-2 py-0.5 rounded-md border border-slate-200/60 font-medium">
+                  来源未知
+                </span>
               )}
 
               {/* Update Available indicator */}

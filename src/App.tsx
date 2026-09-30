@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useMemo, useEffect, useCallback } from 'react';
+import { lazy, Suspense, useState, useMemo, useEffect, useCallback } from 'react';
 import {
   Package,
   Search,
@@ -24,8 +24,7 @@ import { HeaderBar } from './components/HeaderBar';
 import { Sidebar } from './components/Sidebar';
 import { SkillCard } from './components/SkillCard';
 import { InstallModal } from './components/InstallModal';
-import { DiscoveryView } from './components/DiscoveryView';
-import { SettingsView, SettingsSubTab } from './components/SettingsView';
+import type { SettingsSubTab } from './components/SettingsView';
 import { ShareModal } from './components/ShareModal';
 import { useTheme } from './hooks/useTheme';
 import { OnboardingModal } from './components/OnboardingModal';
@@ -51,6 +50,19 @@ import { useQueryClient } from '@tanstack/react-query';
 import { errorToString } from './lib/errors/skillErrorParser';
 import { settingsApi } from './lib/api';
 import { readLlmApiKey } from './lib/llmKey';
+import { matchesSelectedTags } from './lib/utils/tagFilter';
+import {
+  matchesSelectedToolAndEffectFilter,
+  matchesSelectedScope,
+  SkillEffectFilter,
+} from './lib/utils/skillFilters';
+
+const DiscoveryView = lazy(() =>
+  import('./components/DiscoveryView').then(({ DiscoveryView }) => ({ default: DiscoveryView })),
+);
+const SettingsView = lazy(() =>
+  import('./components/SettingsView').then(({ SettingsView }) => ({ default: SettingsView })),
+);
 
 export default function App() {
   // ===== 后端应用状态（首屏一次取全） =====
@@ -182,12 +194,33 @@ export default function App() {
 
   // Top Navigation Tab (Default to 'installed')
   const [currentTab, setCurrentTab] = useState<MainNavTab>('installed');
+  // Load secondary pages on first visit, then keep them mounted so tab changes preserve their state.
+  const [visitedTabs, setVisitedTabs] = useState<Set<MainNavTab>>(() => new Set(['installed']));
   const [settingsSubTab, setSettingsSubTab] = useState<SettingsSubTab>('general');
+
+  const selectTab = (tab: MainNavTab) => {
+    setCurrentTab(tab);
+    setVisitedTabs((visited) => {
+      if (visited.has(tab)) return visited;
+      return new Set(visited).add(tab);
+    });
+  };
 
   // Installed Page Filter States (Project Scope & Tags)
   const [searchQuery, setSearchQuery] = useState('');
+  // `all` is the internal no-scope-filter state; the sidebar has no explicit all-skills option.
   const [selectedScope, setSelectedScope] = useState<'all' | ScopeType | string>('all');
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  const [selectedTools, setSelectedTools] = useState<ToolId[]>([]);
+  const [selectedEffectFilter, setSelectedEffectFilter] = useState<SkillEffectFilter>('all');
+
+  useEffect(() => {
+    const enabledToolIds = new Set(tools.filter((tool) => tool.isEnabled).map((tool) => tool.id));
+    setSelectedTools((current) => {
+      const next = current.filter((toolId) => enabledToolIds.has(toolId));
+      return next.length === current.length ? current : next;
+    });
+  }, [tools]);
 
   // Selection for Batch Mode
   const [selectedSkillIds, setSelectedSkillIds] = useState<Set<string>>(new Set());
@@ -271,19 +304,37 @@ export default function App() {
       .sort((a, b) => b.count - a.count);
   }, [skills]);
 
-  // Filter installed skills by Project, Tags, and Search
+  const globalSkillCount = useMemo(
+    () => skills.filter((skill) => skill.scope === 'global').length,
+    [skills],
+  );
+
+  const toolSkillCounts = useMemo(
+    () => Object.fromEntries(
+      tools.map((tool) => [
+        tool.id,
+        skills.filter((skill) => Boolean(skill.deployedTools[tool.id])).length,
+      ]),
+    ) as Record<ToolId, number>,
+    [skills, tools],
+  );
+
+  // Apply different filter groups together, while selections within a group match any option.
   const filteredSkills = useMemo(() => {
     return skills.filter((skill) => {
-      // 1. Project Scope Filter
-      if (selectedScope === 'global' && skill.scope !== 'global') return false;
-      if (selectedScope !== 'all' && selectedScope !== 'global' && skill.projectId !== selectedScope) return false;
+      if (!matchesSelectedScope(skill.scope, skill.projectId, selectedScope)) return false;
 
-      // 2. Tag Level Filter
-      if (selectedTags.length > 0 && !selectedTags.some((t) => skill.tags.includes(t))) {
+      if (!matchesSelectedTags(skill.tags, selectedTags)) {
         return false;
       }
 
-      // 3. Search Filter
+      if (!matchesSelectedToolAndEffectFilter(
+        skill.deployedTools,
+        tools,
+        selectedTools,
+        selectedEffectFilter,
+      )) return false;
+
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase();
         const matchesName = skill.displayName.toLowerCase().includes(q) || skill.name.toLowerCase().includes(q);
@@ -295,7 +346,7 @@ export default function App() {
 
       return true;
     });
-  }, [skills, selectedScope, selectedTags, searchQuery]);
+  }, [skills, tools, selectedScope, selectedTags, selectedTools, selectedEffectFilter, searchQuery]);
 
   // 当前筛选下可见的选中项：选中态可跨筛选/标签页保留，但批量动作严格作用于可见交集
   const visibleSelectedSkills = useMemo(
@@ -314,6 +365,14 @@ export default function App() {
     if (!targetSkill || !targetTool) return;
 
     const willBeDeployed = !targetSkill.deployedTools[toolId];
+    if (
+      !willBeDeployed &&
+      !window.confirm(
+        `确定停止向「${targetTool.name}」分发技能「${targetSkill.displayName}」？\n\n这会移除该工具目录中的分发文件或链接，中央技能库中的原文件会保留。`,
+      )
+    ) {
+      return;
+    }
 
     toggleToolMutation.mutate(
       { id: skillId, toolId, enabled: willBeDeployed },
@@ -471,31 +530,11 @@ export default function App() {
     runBulkUpdate(skills.filter((s) => s.hasUpdate).map((s) => s.id));
   };
 
-  // 发起卸载：根据设置决定是否需要二次确认
+  // 所有技能卸载都必须先经用户确认。
   const requestUninstall = useCallback((targets: Skill[]) => {
     if (targets.length === 0) return;
-    if (appSettings?.confirmOnUninstall !== false) {
-      setSkillsToUninstall(targets);
-    } else {
-      bulkUninstallMutation.mutate(
-        targets.map((s) => s.id),
-        {
-          onSuccess: (result) => {
-            handleClearSelection();
-            if (result.failed.length === 0) {
-              addToast('success', '卸载完成', `已彻底移除 ${result.succeeded.length} 个技能包。`);
-            } else {
-              addToast(
-                'warning',
-                '批量卸载部分失败',
-                `成功 ${result.succeeded.length} 项、失败 ${result.failed.length} 项：${errorToString(result.failed[0].error)}`
-              );
-            }
-          },
-        },
-      );
-    }
-  }, [appSettings?.confirmOnUninstall, bulkUninstallMutation, handleClearSelection, addToast]);
+    setSkillsToUninstall(targets);
+  }, []);
 
   const handleOpenTagEdit = useCallback((skill: Skill) => {
     setTagEditingSkillId(skill.id);
@@ -596,7 +635,7 @@ export default function App() {
     if (failed.length === 0) {
       setInstallItems([]);
       setInstallError(null);
-      setCurrentTab('installed');
+      selectTab('installed');
       setSearchQuery('');
       setSelectedScope('all');
       setSelectedTags([]);
@@ -637,6 +676,22 @@ export default function App() {
     );
   };
 
+  const handleToggleToolFilter = (toolId: ToolId) => {
+    setSelectedTools((previous) =>
+      previous.includes(toolId)
+        ? previous.filter((selectedToolId) => selectedToolId !== toolId)
+        : [...previous, toolId],
+    );
+  };
+
+  const handleResetInstalledFilters = () => {
+    setSelectedScope('all');
+    setSelectedTags([]);
+    setSelectedTools([]);
+    setSelectedEffectFilter('all');
+    setSearchQuery('');
+  };
+
   // 标签增删：乐观更新缓存中的 tags，失败回滚快照，杜绝连点竞态双写
   const applySkillTagsOptimistic = (skillId: string, nextTags: string[]) => {
     const prevState = queryClient.getQueryData<AppState>(APP_STATE_KEY);
@@ -672,6 +727,9 @@ export default function App() {
   const handleRemoveTagFromSkill = (skillId: string, tagToRemove: string) => {
     const skill = skills.find((s) => s.id === skillId);
     if (!skill) return;
+    if (!window.confirm(`确定从技能「${skill.displayName}」中移除标签「${tagToRemove}」？`)) {
+      return;
+    }
     const nextTags = skill.tags.filter((t) => t !== tagToRemove);
     const prevState = applySkillTagsOptimistic(skillId, nextTags);
     setTagsMutation.mutate(
@@ -763,7 +821,7 @@ export default function App() {
         locale={settings.locale}
         currentTab={currentTab}
         onSelectTab={(tab) => {
-          setCurrentTab(tab);
+          selectTab(tab);
           handleClearSelection();
         }}
       />
@@ -781,15 +839,22 @@ export default function App() {
               name: p.name,
               count: p.skillCount,
             }))}
-            globalCount={skills.filter((s) => s.scope === 'global').length}
-            totalCount={skills.length}
+            globalCount={globalSkillCount}
             allTags={allTags}
             selectedTags={selectedTags}
             onToggleTag={handleToggleTag}
             onClearTags={() => setSelectedTags([])}
+            tools={tools.filter((tool) => tool.isEnabled)}
+            toolCounts={toolSkillCounts}
+            selectedTools={selectedTools}
+            onToggleTool={handleToggleToolFilter}
+            selectedEffectFilter={selectedEffectFilter}
+            onSelectEffectFilter={setSelectedEffectFilter}
+            hasSearchQuery={Boolean(searchQuery.trim())}
+            onResetFilters={handleResetInstalledFilters}
             onOpenRegisterProject={() => {
               setSettingsSubTab('projects');
-              setCurrentTab('settings');
+              selectTab('settings');
             }}
           />
 
@@ -820,34 +885,28 @@ export default function App() {
 
               {/* Right Actions: Check Updates + Updates + Selection Controls */}
               <div className="flex items-center gap-2 flex-wrap">
-                <button
-                  onClick={handleCheckUpdates}
-                  disabled={checkUpdatesMutation.isPending}
-                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-sm font-medium transition-colors ${
-                    updateAvailableCount > 0
-                      ? 'border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100'
-                      : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50 shadow-2xs'
-                  }`}
-                  title={t('一键检查所有技能的远端 Git 提交与版本更新', 'Check remote Git commits and updates for every skill')}
-                >
-                  <RotateCw className={`w-4 h-4 ${checkUpdatesMutation.isPending ? 'animate-spin text-indigo-600' : 'text-slate-500'}`} />
-                  <span>{checkUpdatesMutation.isPending
-                    ? t('检测中...', 'Checking...')
-                    : updateAvailableCount > 0
-                      ? t(`有 ${updateAvailableCount} 项待更新`, `${updateAvailableCount} updates available`)
-                      : t('检查更新', 'Check for updates')}</span>
-                </button>
-
-                {updateAvailableCount > 0 && (
+                {updateAvailableCount > 0 && !checkUpdatesMutation.isPending ? (
                   <button
                     onClick={handleUpdateAll}
                     disabled={bulkUpdateMutation.isPending}
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 active:bg-amber-700 disabled:opacity-60 text-white text-sm font-semibold shadow-xs transition-colors"
-                  title={t('一键将所有有更新的技能更新至远程最新提交', 'Update every skill with an available remote update')}
-                >
-                  <RotateCw className={`w-4 h-4 ${bulkUpdateMutation.isPending ? 'animate-spin' : ''}`} />
-                  <span>{t(`全部更新 (${updateAvailableCount})`, `Update all (${updateAvailableCount})`)}</span>
-                </button>
+                    title={t('一键将所有有更新的技能更新至远程最新提交', 'Update every skill with an available remote update')}
+                  >
+                    <RotateCw className={`w-4 h-4 ${bulkUpdateMutation.isPending ? 'animate-spin' : ''}`} />
+                    <span>{t(`全部更新 (${updateAvailableCount})`, `Update all (${updateAvailableCount})`)}</span>
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleCheckUpdates}
+                    disabled={checkUpdatesMutation.isPending}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 bg-white text-slate-700 text-sm font-medium shadow-2xs transition-colors hover:bg-slate-50"
+                    title={t('一键检查所有技能的远端 Git 提交与版本更新', 'Check remote Git commits and updates for every skill')}
+                  >
+                    <RotateCw className={`w-4 h-4 ${checkUpdatesMutation.isPending ? 'animate-spin text-indigo-600' : 'text-slate-500'}`} />
+                    <span>{checkUpdatesMutation.isPending
+                      ? t('检测中...', 'Checking...')
+                      : t('检查更新', 'Check for updates')}</span>
+                  </button>
                 )}
 
                 <span className="h-4 w-px bg-slate-200 mx-1" />
@@ -888,22 +947,18 @@ export default function App() {
                   <div>
                     <h3 className="text-sm font-bold text-slate-800">未找到符合条件的技能</h3>
                     <p className="text-xs text-slate-500 mt-1">
-                      请调整搜索关键词或重置项目/标签筛选条件。
+                      请调整搜索关键词或筛选条件。
                     </p>
                   </div>
                   <div className="pt-2 flex items-center justify-center gap-2">
                     <button
-                      onClick={() => {
-                        setSearchQuery('');
-                        setSelectedScope('all');
-                        setSelectedTags([]);
-                      }}
+                      onClick={handleResetInstalledFilters}
                       className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 shadow-2xs transition-colors"
                     >
                       重置所有筛选
                     </button>
                     <button
-                      onClick={() => setCurrentTab('discovery')}
+                      onClick={() => selectTab('discovery')}
                       className="px-3.5 py-1.5 rounded-lg text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 shadow-xs"
                     >
                       发现新技能
@@ -936,31 +991,39 @@ export default function App() {
 
         {/* TAB 2: Discovery and Installation */}
         <main className={`flex-1 flex-col min-w-0 bg-[#FBFBFC] overflow-hidden ${currentTab === 'discovery' ? 'flex' : 'hidden'}`}>
-          <DiscoveryView
-            installedSkills={skills}
-            addToast={addToast}
-            onSelectInstall={(item) => setInstallItems([item])}
-            onBatchInstall={(items) => setInstallItems(items)}
-          />
+          {visitedTabs.has('discovery') && (
+            <Suspense fallback={<div className="flex-1 grid place-items-center text-sm text-slate-500">{t('加载中...', 'Loading...')}</div>}>
+              <DiscoveryView
+                installedSkills={skills}
+                addToast={addToast}
+                onSelectInstall={(item) => setInstallItems([item])}
+                onBatchInstall={(items) => setInstallItems(items)}
+              />
+            </Suspense>
+          )}
         </main>
 
         {/* TAB 3: Settings Page (Unified Settings, Tools, Projects, Models, About) */}
         <main className={`flex-1 flex-col min-w-0 bg-[#FBFBFC] overflow-hidden ${currentTab === 'settings' ? 'flex' : 'hidden'}`}>
-          <SettingsView
-            settings={settings}
-            tools={tools}
-            projects={projects}
-            skills={skills}
-            addToast={addToast}
-            onSaveSettings={handleSaveSettings}
-            onOpenOnboarding={() => setShowOnboarding(true)}
-            onFilterByProject={(projectId) => {
-              setSelectedScope(projectId);
-              setCurrentTab('installed');
-            }}
-            activeSubTab={settingsSubTab}
-            onSelectSubTab={setSettingsSubTab}
-          />
+          {visitedTabs.has('settings') && (
+            <Suspense fallback={<div className="flex-1 grid place-items-center text-sm text-slate-500">{t('加载中...', 'Loading...')}</div>}>
+              <SettingsView
+                settings={settings}
+                tools={tools}
+                projects={projects}
+                skills={skills}
+                addToast={addToast}
+                onSaveSettings={handleSaveSettings}
+                onOpenOnboarding={() => setShowOnboarding(true)}
+                onFilterByProject={(projectId) => {
+                  setSelectedScope(projectId);
+                  selectTab('installed');
+                }}
+                activeSubTab={settingsSubTab}
+                onSelectSubTab={setSettingsSubTab}
+              />
+            </Suspense>
+          )}
         </main>
       </div>
 
@@ -1036,7 +1099,7 @@ export default function App() {
 
       {/* 5.5 分发方式变更后的一键重部署提示 */}
       {redeployPromptIds && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm">
+        <div data-window-modal-backdrop className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm">
           <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-96 p-6 space-y-4 select-none">
             <h3 className="text-sm font-bold text-slate-800">分发方式已变更</h3>
             <p className="text-xs leading-relaxed text-slate-500">

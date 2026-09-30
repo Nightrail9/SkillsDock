@@ -238,6 +238,10 @@ pub async fn probe_repo_skills(owner: &str, name: &str, branch: &str) -> Result<
         match probe_branch_skills(owner, name, candidate).await {
             Ok(probe) => return Ok(probe),
             Err(err) => {
+                if err.to_string() == "GITHUB_API_RATE_LIMIT" {
+                    log::warn!("GitHub API 限额已耗尽，改用仓库 ZIP 探测 {owner}/{name}");
+                    return probe_repo_from_archive(owner, name, branch).await;
+                }
                 last_error = Some(err);
             }
         }
@@ -257,6 +261,9 @@ async fn probe_branch_skills(owner: &str, name: &str, branch: &str) -> Result<Re
         .await?;
     if !response.status().is_success() {
         let status = response.status().as_u16().to_string();
+        if status == "403" {
+            return Err(anyhow!("GITHUB_API_RATE_LIMIT"));
+        }
         return Err(anyhow!(format_skill_error(
             "DOWNLOAD_FAILED",
             &[("url", &url), ("status", &status)],
@@ -318,6 +325,59 @@ async fn probe_branch_skills(owner: &str, name: &str, branch: &str) -> Result<Re
         branch: branch.to_string(),
         skills,
     })
+}
+
+/// GitHub API 限流时通过公开 ZIP 归档扫描技能，避免探测依赖未认证 API 配额。
+async fn probe_repo_from_archive(owner: &str, name: &str, branch: &str) -> Result<RepoSkillProbe> {
+    let repo = SkillRepo {
+        owner: owner.to_string(),
+        name: name.to_string(),
+        branch: branch.to_string(),
+        enabled: true,
+    };
+    let (archive, used_branch) = download_repo_with_timeout(&repo).await?;
+    let mut skills = Vec::new();
+    collect_archive_skills(archive.path(), archive.path(), name, &mut skills)?;
+    skills.sort_by(|left, right| left.subpath.cmp(&right.subpath));
+    skills.truncate(MAX_PROBE_SKILLS);
+    Ok(RepoSkillProbe {
+        branch: used_branch,
+        skills,
+    })
+}
+
+fn collect_archive_skills(
+    root: &Path,
+    directory: &Path,
+    repo_name: &str,
+    skills: &mut Vec<ProbedRepoSkill>,
+) -> Result<()> {
+    if skills.len() >= MAX_PROBE_SKILLS {
+        return Ok(());
+    }
+    if directory.join("SKILL.md").is_file() {
+        let relative = directory
+            .strip_prefix(root)?
+            .to_string_lossy()
+            .replace('\\', "/");
+        let (display_name, description) =
+            SkillService::read_skill_name_desc(&directory.join("SKILL.md"), repo_name);
+        skills.push(ProbedRepoSkill {
+            name: skill_dir_name(&relative, repo_name),
+            display_name: Some(display_name),
+            description,
+            subpath: relative,
+        });
+    }
+    for entry in std::fs::read_dir(directory)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !entry.file_type()?.is_dir() || entry.file_name().to_string_lossy().starts_with('.') {
+            continue;
+        }
+        collect_archive_skills(root, &path, repo_name, skills)?;
+    }
+    Ok(())
 }
 
 /// SKILL.md 的树内路径 → 技能子目录（仓库根级技能为 ""）；含隐藏路径段的跳过
@@ -433,6 +493,28 @@ pub fn choose_doc_path(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn collect_archive_skills_finds_root_and_nested_skills() {
+        let root = tempfile::tempdir().expect("create temporary repository");
+        std::fs::write(root.path().join("SKILL.md"), "---\nname: root skill\n---\n")
+            .expect("write root skill metadata");
+        let nested = root.path().join("skills/pdf");
+        std::fs::create_dir_all(&nested).expect("create nested skill directory");
+        std::fs::write(nested.join("SKILL.md"), "---\nname: pdf\n---\n")
+            .expect("write nested skill metadata");
+
+        let mut skills = Vec::new();
+        collect_archive_skills(root.path(), root.path(), "repo", &mut skills)
+            .expect("scan extracted repository");
+        skills.sort_by(|left, right| left.subpath.cmp(&right.subpath));
+
+        assert_eq!(skills.len(), 2);
+        assert_eq!(skills[0].subpath, "");
+        assert_eq!(skills[0].name, "repo");
+        assert_eq!(skills[1].subpath, "skills/pdf");
+        assert_eq!(skills[1].name, "pdf");
+    }
 
     #[test]
     fn skill_subpath_from_md_path_handles_root_and_nested() {

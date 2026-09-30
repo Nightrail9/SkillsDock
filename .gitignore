@@ -10,3 +10,8 @@ dist-release/
 *.log
 .env*
 !.env.example
+
+/.codex/
+/rules/
+/roles/
+/AGENTS.md

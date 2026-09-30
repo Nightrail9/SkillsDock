@@ -148,9 +148,9 @@ let mockState: AppState = {
     confirmOnUninstall: true,
   },
   llmConfig: {
-    providerName: 'OpenAI',
-    baseUrl: 'https://api.openai.com/v1',
-    model: 'gpt-4o',
+    providerName: '',
+    baseUrl: '',
+    model: '',
     language: 'zh',
   },
   repos: [

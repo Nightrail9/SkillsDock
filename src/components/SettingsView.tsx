@@ -673,29 +673,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   </div>
                 )}
 
-                <div className="flex items-center justify-between py-1">
-                  <div>
-                    <div className="text-xs font-bold text-slate-800">{t('卸载前需要二次确认', 'Confirm before uninstalling')}</div>
-                    <p className="text-[11px] text-slate-500 mt-0.5">
-                      {t('卸载即彻底删除且无备份，建议保持开启以防误操作。', 'Uninstalling permanently deletes files without a backup. Keep this enabled to prevent mistakes.')}
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => save({ ...formData, confirmOnUninstall: !formData.confirmOnUninstall })}
-                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out ${
-                      formData.confirmOnUninstall ? 'bg-indigo-600' : 'bg-slate-300'
-                    }`}
-                    role="switch"
-                    aria-checked={formData.confirmOnUninstall}
-                  >
-                    <span
-                      className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-md transition duration-200 ${
-                        formData.confirmOnUninstall ? 'translate-x-5' : 'translate-x-0'
-                      }`}
-                    />
-                  </button>
-                </div>
               </div>
 
               {/* Action button */}
@@ -995,7 +972,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
       {/* 恢复默认设置二次确认弹窗（居中浮于最顶层） */}
       {showResetConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-xs p-4 animate-in fade-in duration-150">
+        <div data-window-modal-backdrop className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-xs p-4 animate-in fade-in duration-150">
           <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4 animate-in zoom-in-95 duration-150">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center shrink-0 border border-amber-100">
@@ -1042,7 +1019,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
       {/* 符号链接管理员提权提示弹窗（居中浮于最顶层） */}
       {showAdminConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-xs p-4 animate-in fade-in duration-150">
+        <div data-window-modal-backdrop className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-xs p-4 animate-in fade-in duration-150">
           <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4 animate-in zoom-in-95 duration-150">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center shrink-0 border border-indigo-100">

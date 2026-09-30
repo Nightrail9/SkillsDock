@@ -109,7 +109,7 @@ export const InstallModal: React.FC<InstallModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4 animate-in fade-in duration-150"
+      data-window-modal-backdrop className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4 animate-in fade-in duration-150"
     >
       <div className="bg-white rounded-3xl shadow-2xl border border-slate-200/90 w-full max-w-xl max-h-full flex flex-col overflow-hidden animate-in zoom-in-95 duration-150">
         {/* Header */}
