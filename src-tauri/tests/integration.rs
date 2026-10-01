@@ -48,9 +48,10 @@ async fn full_skill_lifecycle() {
     fs::write(external.join("helper.txt"), "helper").unwrap();
 
     // ---- 导入到中央库 ----
-    let record = SkillService::import_local(&db, external.to_str().unwrap(), vec![], None, None, None)
-        .await
-        .expect("import_local");
+    let record =
+        SkillService::import_local(&db, external.to_str().unwrap(), vec![], None, None, None)
+            .await
+            .expect("import_local");
     assert_eq!(record.id, "local:my-skill");
     assert_eq!(record.name, "my-skill");
     assert_eq!(record.directory, "my-skill");
@@ -111,12 +112,16 @@ async fn full_skill_lifecycle() {
     assert!(!stored.exists(), "中央库目录已删");
 
     // ---- 标签接口 ----
-    let record2 = SkillService::import_local(&db, external.to_str().unwrap(), vec![], None, None, None)
-        .await
-        .expect("re-import");
-    let updated =
-        SkillService::set_skill_tags(&db, vec![record2.id.clone()], vec![" cli ".to_string(), "cli".to_string(), "".to_string()])
-            .expect("set tags");
+    let record2 =
+        SkillService::import_local(&db, external.to_str().unwrap(), vec![], None, None, None)
+            .await
+            .expect("re-import");
+    let updated = SkillService::set_skill_tags(
+        &db,
+        vec![record2.id.clone()],
+        vec![" cli ".to_string(), "cli".to_string(), "".to_string()],
+    )
+    .expect("set tags");
     assert_eq!(updated, 1);
     assert_eq!(
         db.get_skill(&record2.id).unwrap().unwrap().tags,

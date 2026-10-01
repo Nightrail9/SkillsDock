@@ -175,7 +175,12 @@ pub async fn fetch_latest_commit(owner: &str, name: &str, branch: &str) -> Optio
 }
 
 /// 构建仓库内文档 URL（坐标非法时返回 None，避免产出可打开任意路径的链接）
-pub fn build_skill_doc_url(owner: &str, repo: &str, branch: &str, doc_path: &str) -> Option<String> {
+pub fn build_skill_doc_url(
+    owner: &str,
+    repo: &str,
+    branch: &str,
+    doc_path: &str,
+) -> Option<String> {
     if SkillService::validate_repo_ref(owner, repo, branch).is_err() {
         log::warn!("跳过非法仓库坐标的文档链接: {owner}/{repo}@{branch}");
         return None;
@@ -251,9 +256,7 @@ pub async fn probe_repo_skills(owner: &str, name: &str, branch: &str) -> Result<
 
 /// 列出指定分支下的全部 SKILL.md（git/trees API），并补充 frontmatter 信息
 async fn probe_branch_skills(owner: &str, name: &str, branch: &str) -> Result<RepoSkillProbe> {
-    let url = format!(
-        "https://api.github.com/repos/{owner}/{name}/git/trees/{branch}?recursive=1"
-    );
+    let url = format!("https://api.github.com/repos/{owner}/{name}/git/trees/{branch}?recursive=1");
     let response = http_client()?
         .get(&url)
         .timeout(std::time::Duration::from_secs(15))
@@ -398,11 +401,7 @@ fn skill_dir_name(subpath: &str, repo_name: &str) -> String {
     if subpath.is_empty() {
         return repo_name.to_string();
     }
-    subpath
-        .rsplit('/')
-        .next()
-        .unwrap_or(repo_name)
-        .to_string()
+    subpath.rsplit('/').next().unwrap_or(repo_name).to_string()
 }
 
 /// 并发拉取前 N 个 SKILL.md 的 frontmatter，补充展示名与简介（失败静默保留目录名）
@@ -488,7 +487,6 @@ pub fn choose_doc_path(
     }
     format!("{}/SKILL.md", directory.trim_end_matches('/'))
 }
-
 
 #[cfg(test)]
 mod tests {

@@ -1,30 +1,41 @@
-name: release-macos
+name: release
 
 on:
   push:
     tags: ["v*"]
-  workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  macos:
-    name: build (${{ matrix.target }})
+  build:
+    name: build (${{ matrix.target || 'windows-x86_64' }})
     strategy:
       fail-fast: false
+      # tauri-action merges each platform into latest.json on the draft release.
+      # Serializing the matrix prevents concurrent writes from dropping platforms.
+      max-parallel: 1
       matrix:
-        target: [aarch64-apple-darwin, x86_64-apple-darwin]
-    runs-on: macos-latest
+        include:
+          - os: windows-latest
+            target: ''
+            args: --bundles nsis
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            args: --target aarch64-apple-darwin --bundles dmg
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            args: --target x86_64-apple-darwin --bundles dmg
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: 安装 Rust 工具链（${{ matrix.target }}）
+      - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
-      - name: 安装 Node
+      - name: Install Node
         uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -32,19 +43,49 @@ jobs:
 
       - run: npm ci
 
-      - name: 读取版本号（以 src-tauri/tauri.conf.json 为准）
-        id: version
-        working-directory: .
-        run: echo "version=$(node -p "require('./src-tauri/tauri.conf.json').version")" >> "$GITHUB_OUTPUT"
-
-      - name: 构建 dmg
-        working-directory: src-tauri
-        run: npx tauri build --bundles dmg --target ${{ matrix.target }}
-
-      - name: 上传构建产物
-        uses: actions/upload-artifact@v4
+      - name: Build and upload signed release assets
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         with:
-          name: skilldock-macos-${{ matrix.target }}
-          path: |
-            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.dmg
-          if-no-files-found: error
+          tagName: v__VERSION__
+          releaseName: SkillDock v__VERSION__
+          releaseBody: Windows setup/portable files and macOS x64/arm64 disk images.
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
+          uploadUpdaterJson: true
+          updaterJsonPreferNsis: true
+          uploadUpdaterSignatures: true
+
+      - name: Package Windows portable ZIP
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = node -p "require('./src-tauri/tauri.conf.json').version"
+          $binary = Join-Path $PWD 'src-tauri/target/release/skilldock.exe'
+          if (-not (Test-Path -LiteralPath $binary)) {
+            throw "Expected portable executable was not produced: $binary"
+          }
+          $staging = Join-Path $env:RUNNER_TEMP 'skilldock-green'
+          New-Item -ItemType Directory -Path $staging -Force | Out-Null
+          Copy-Item -LiteralPath $binary -Destination (Join-Path $staging 'SkillDock.exe')
+          Set-Content -LiteralPath (Join-Path $staging 'skilldock-portable.flag') -Value 'true' -NoNewline
+          $archive = Join-Path $PWD "SkillDock-$version-x64-green.zip"
+          Compress-Archive -LiteralPath (Join-Path $staging 'SkillDock.exe'), (Join-Path $staging 'skilldock-portable.flag') -DestinationPath $archive -Force
+          gh release upload "v$version" $archive --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish completed release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false

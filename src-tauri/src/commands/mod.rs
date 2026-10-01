@@ -12,10 +12,10 @@ use crate::services::share::SharePayload;
 use crate::services::skill_service::{self, SkillService};
 use crate::services::{github, llm_service::LlmService, registry, share};
 use crate::types::{
-    AppSettings, AppStateSnapshot, DescriptionProcessingResult, ImportSkillSelection, InstallSkillInput,
-    LlmConfig, LlmConfigInput, LlmConnectionTest, MigrationResult, ProjectPathStatus, ProjectScope,
-    RepoSkillProbe, Skill, SkillRepo, SkillUpdateInfo, SkillsShSearchResult, ToolAdapter, ToolAdapterInput,
-    ToolPathValidation, UnmanagedSkill,
+    AppSettings, AppStateSnapshot, DescriptionProcessingResult, ImportSkillSelection,
+    InstallSkillInput, LlmConfig, LlmConfigInput, LlmConnectionTest, MigrationResult,
+    ProjectPathStatus, ProjectScope, RepoSkillProbe, Skill, SkillRepo, SkillUpdateInfo,
+    SkillsShSearchResult, ToolAdapter, ToolAdapterInput, ToolPathValidation, UnmanagedSkill,
 };
 use crate::AppState;
 
@@ -193,9 +193,7 @@ pub fn uninstall_skill(state: State<'_, AppState>, id: String) -> CmdResult<()> 
 }
 
 #[tauri::command]
-pub async fn check_skill_updates(
-    state: State<'_, AppState>,
-) -> CmdResult<Vec<SkillUpdateInfo>> {
+pub async fn check_skill_updates(state: State<'_, AppState>) -> CmdResult<Vec<SkillUpdateInfo>> {
     let updates = SkillService::check_updates(&state.db)
         .await
         .map_err(|e| e.to_string())?;
@@ -297,13 +295,7 @@ fn slugify_tool_id(name: &str) -> String {
         .trim()
         .to_lowercase()
         .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c
-            } else {
-                '-'
-            }
-        })
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect::<String>()
         .split('-')
         .filter(|s| !s.is_empty())
@@ -323,7 +315,11 @@ pub fn add_tool_adapter(
         .clone()
         .filter(|id| !id.trim().is_empty())
         .unwrap_or_else(|| slugify_tool_id(&input.name));
-    if db.get_tool_adapter(&id).map_err(|e| e.to_string())?.is_some() {
+    if db
+        .get_tool_adapter(&id)
+        .map_err(|e| e.to_string())?
+        .is_some()
+    {
         return Err(format!("工具 id 已存在: {id}"));
     }
     let validation = validate_path_inner(&input.path);
@@ -345,10 +341,7 @@ pub fn add_tool_adapter(
         installed_skills_count: 0,
         detected: validation.exists,
         version: None,
-        color: input
-            .color
-            .clone()
-            .unwrap_or_else(|| "#4F46E5".to_string()),
+        color: input.color.clone().unwrap_or_else(|| "#4F46E5".to_string()),
     };
     let sort_order = db.list_tool_adapters().map_err(|e| e.to_string())?.len() as i64;
     db.insert_tool_adapter(&tool, sort_order)
@@ -396,7 +389,10 @@ pub fn update_tool_adapter(
         installed_skills_count: 0,
         detected: validation.exists,
         version: None,
-        color: input.color.clone().unwrap_or_else(|| existing.color.clone()),
+        color: input
+            .color
+            .clone()
+            .unwrap_or_else(|| existing.color.clone()),
     };
     if !db.update_tool_adapter(&tool).map_err(|e| e.to_string())? {
         return Err(format!("工具不存在: {id}"));
@@ -415,11 +411,7 @@ pub fn delete_tool_adapter(state: State<'_, AppState>, id: String) -> CmdResult<
 }
 
 #[tauri::command]
-pub fn toggle_tool_enabled(
-    state: State<'_, AppState>,
-    id: String,
-    enabled: bool,
-) -> CmdResult<()> {
+pub fn toggle_tool_enabled(state: State<'_, AppState>, id: String, enabled: bool) -> CmdResult<()> {
     if !state
         .db
         .set_tool_enabled(&id, enabled)
@@ -474,7 +466,9 @@ pub fn add_skill_project(state: State<'_, AppState>, path: String) -> CmdResult<
         .map(|n| n.to_string_lossy().to_string())
         .filter(|n| !n.is_empty())
         .unwrap_or_else(|| key.clone());
-    let id = db.add_skill_project(&name, &key).map_err(|e| e.to_string())?;
+    let id = db
+        .add_skill_project(&name, &key)
+        .map_err(|e| e.to_string())?;
     Ok(ProjectScope {
         id: id.to_string(),
         name,
@@ -513,8 +507,14 @@ pub async fn import_project_skills(
                 .ok_or_else(|| format!("Imported skill disappeared: {}", record.id))
         })
         .collect::<CmdResult<_>>()?;
-    let tools = state.db.list_tool_adapters().map_err(|error| error.to_string())?;
-    let projects = state.db.list_skill_projects().map_err(|error| error.to_string())?;
+    let tools = state
+        .db
+        .list_tool_adapters()
+        .map_err(|error| error.to_string())?;
+    let projects = state
+        .db
+        .list_skill_projects()
+        .map_err(|error| error.to_string())?;
     Ok(records
         .iter()
         .map(|record| SkillService::record_to_skill(&state.db, record, &tools, &projects, false))
@@ -710,4 +710,3 @@ pub fn restart_as_admin() -> CmdResult<()> {
         Err("当前平台无需提权：macOS / Linux 原生支持创建符号链接".to_string())
     }
 }
-

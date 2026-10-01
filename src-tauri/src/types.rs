@@ -157,6 +157,9 @@ pub struct AppSettings {
     #[serde(default = "default_locale")]
     pub locale: String,
     pub confirm_on_uninstall: bool,
+    /// 关闭主窗口时隐藏到系统托盘；新安装和历史配置默认开启。
+    #[serde(default = "default_close_to_tray")]
+    pub close_to_tray: bool,
 }
 
 fn default_theme() -> String {
@@ -165,6 +168,10 @@ fn default_theme() -> String {
 
 fn default_locale() -> String {
     "zh".to_string()
+}
+
+fn default_close_to_tray() -> bool {
+    true
 }
 
 impl Default for AppSettings {
@@ -179,6 +186,7 @@ impl Default for AppSettings {
             theme: default_theme(),
             locale: default_locale(),
             confirm_on_uninstall: true,
+            close_to_tray: true,
         }
     }
 }

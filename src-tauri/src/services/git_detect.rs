@@ -33,7 +33,10 @@ pub fn detect_github_source(dir: &Path) -> Option<GitSourceInfo> {
     // 避免把非法引用（如 `../config`）带到上层展示与拼接
     let branch = branch.filter(|name| {
         let mut parts = repo.splitn(2, '/');
-        let (owner, repo_name) = (parts.next().unwrap_or_default(), parts.next().unwrap_or_default());
+        let (owner, repo_name) = (
+            parts.next().unwrap_or_default(),
+            parts.next().unwrap_or_default(),
+        );
         SkillService::validate_repo_ref(owner, repo_name, name).is_ok()
     });
 

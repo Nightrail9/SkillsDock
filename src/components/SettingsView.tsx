@@ -32,6 +32,9 @@ import {
 } from 'lucide-react';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { getVersion } from '@tauri-apps/api/app';
+import { invoke } from '@tauri-apps/api/core';
+import { check, type Update } from '@tauri-apps/plugin-updater';
+import { relaunch } from '@tauri-apps/plugin-process';
 import { SkillDockLogo } from './icons/BrandIcons';
 import { AppSettings, ToolAdapter, AddToastFn, LlmConfigInput, ProjectScope, Skill } from '../types';
 import { useMigrateLibrary } from '../hooks/useSettings';
@@ -95,6 +98,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [showAdminConfirm, setShowAdminConfirm] = useState(false);
   const [isElevating, setIsElevating] = useState(false);
   const [appVersion, setAppVersion] = useState<string>('');
+  const [isPortableInstall, setIsPortableInstall] = useState<boolean | null>(
+    () => !isTauriEnvironment() ? false : null,
+  );
+  const [availableAppUpdate, setAvailableAppUpdate] = useState<Update | null>(null);
+  const [isCheckingAppUpdate, setIsCheckingAppUpdate] = useState(false);
+  const [isInstallingAppUpdate, setIsInstallingAppUpdate] = useState(false);
   const [llmForm, setLlmForm] = useState<{
     providerName: string;
     baseUrl: string;
@@ -136,6 +145,29 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       disposed = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!isTauriEnvironment()) return;
+
+    let disposed = false;
+    invoke<boolean>('is_portable_install')
+      .then((isPortable) => !disposed && setIsPortableInstall(isPortable))
+      .catch((error) => {
+        console.warn('Failed to detect portable app installation:', error);
+        if (!disposed) setIsPortableInstall(true);
+      });
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
+  useEffect(() => () => {
+    if (availableAppUpdate) {
+      void availableAppUpdate.close().catch((error) => {
+        console.warn('Failed to release app updater resources:', error);
+      });
+    }
+  }, [availableAppUpdate]);
 
   useEffect(() => {
     if (!llmConfig) return;
@@ -239,7 +271,43 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       theme: 'light',
       locale: 'zh',
       confirmOnUninstall: true,
+      closeToTray: true,
     });
+  };
+
+  const handleCheckAppUpdate = async () => {
+    if (!isTauriEnvironment()) {
+      addToast('info', t('应用更新仅在桌面版中可用', 'App updates are available in the desktop app'));
+      return;
+    }
+
+    setIsCheckingAppUpdate(true);
+    setAvailableAppUpdate(null);
+    try {
+      const update = await check();
+      if (!update) {
+        addToast('success', t('当前已是最新版本', 'You are up to date'));
+        return;
+      }
+      setAvailableAppUpdate(update);
+      addToast('info', t(`发现新版本 ${update.version}`, `Version ${update.version} is available`));
+    } catch (error) {
+      addToast('error', t('检查应用更新失败', 'Failed to check for app updates'), errorToString(error));
+    } finally {
+      setIsCheckingAppUpdate(false);
+    }
+  };
+
+  const handleInstallAppUpdate = async () => {
+    if (!availableAppUpdate) return;
+    setIsInstallingAppUpdate(true);
+    try {
+      await availableAppUpdate.downloadAndInstall();
+      await relaunch();
+    } catch (error) {
+      addToast('error', t('安装应用更新失败', 'Failed to install app update'), errorToString(error));
+      setIsInstallingAppUpdate(false);
+    }
   };
 
   const handleSelectDistributionMethod = (method: 'symlink' | 'copy') => {
@@ -625,6 +693,66 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 <div className="flex items-center gap-2">
                   <RefreshCw className="w-4 h-4 text-indigo-600" />
                   <h2 className="text-sm font-bold text-slate-900">{t('版本更新检测与卸载', 'Updates & uninstall')}</h2>
+                </div>
+
+                <div className="rounded-2xl border border-indigo-100 bg-indigo-50/60 p-4 space-y-3">
+                  <div>
+                    <div className="text-xs font-bold text-slate-800">{t('SkillDock 应用更新', 'SkillDock app updates')}</div>
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      {isPortableInstall === true
+                        ? t('绿色便携版请下载新 ZIP 手动替换。', 'For the portable ZIP, download and replace it manually.')
+                        : t('适用于 Windows 安装版和 macOS 安装版。绿色便携版请下载新 ZIP 手动替换。', 'Available for the Windows installer and macOS app. For the portable ZIP, download and replace it manually.')}
+                    </p>
+                    {availableAppUpdate && (
+                      <p className="text-[11px] text-indigo-700 mt-2">
+                        {t(`当前版本 ${appVersion}，可更新至 ${availableAppUpdate.version}`, `Current ${appVersion}; version ${availableAppUpdate.version} is available`)}
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleCheckAppUpdate}
+                      disabled={isPortableInstall !== false || isCheckingAppUpdate || isInstallingAppUpdate}
+                      className="px-3.5 py-2 bg-white border border-indigo-200 hover:bg-indigo-100 disabled:opacity-60 text-indigo-700 font-semibold rounded-xl text-xs transition-colors"
+                    >
+                      {isCheckingAppUpdate ? t('正在检查…', 'Checking…') : t('检查应用更新', 'Check app updates')}
+                    </button>
+                    {availableAppUpdate && isPortableInstall === false && (
+                      <button
+                        type="button"
+                        onClick={handleInstallAppUpdate}
+                        disabled={isInstallingAppUpdate}
+                        className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white font-semibold rounded-xl text-xs transition-colors"
+                      >
+                        {isInstallingAppUpdate ? t('正在下载并安装…', 'Downloading and installing…') : t('安装并重启', 'Install and restart')}
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between py-1">
+                  <div>
+                    <div className="text-xs font-bold text-slate-800">{t('关闭时最小化到托盘', 'Minimize to tray when closing')}</div>
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      {t('点击窗口关闭按钮时隐藏 SkillDock，应用继续在系统托盘运行。', 'The close button hides SkillDock while it keeps running in the system tray.')}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => save({ ...formData, closeToTray: !formData.closeToTray })}
+                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out ${
+                      formData.closeToTray ? 'bg-indigo-600' : 'bg-slate-300'
+                    }`}
+                    role="switch"
+                    aria-checked={formData.closeToTray}
+                  >
+                    <span
+                      className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-md transition duration-200 ${
+                        formData.closeToTray ? 'translate-x-5' : 'translate-x-0'
+                      }`}
+                    />
+                  </button>
                 </div>
 
                 <div className="flex items-center justify-between py-1">

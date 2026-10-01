@@ -14,10 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 #[cfg(windows)]
-use std::os::windows::{
-    fs::OpenOptionsExt,
-    io::AsRawHandle,
-};
+use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
 
 use anyhow::{anyhow, Context, Result};
 use indexmap::IndexMap;
@@ -27,9 +24,9 @@ use crate::db::Database;
 use crate::error::format_skill_error;
 use crate::services::{git_detect, github};
 use crate::types::{
-    AppSettings, ImportSkillSelection, InstallSkillInput, MigrationResult,
-    ProjectScope, Skill, SkillFile, SkillRecord, SkillRepo, SkillSource, SkillUpdateInfo,
-    ToolAdapter, UnmanagedSkill, SKILL_SCOPE_GLOBAL, SKILL_SCOPE_PROJECT,
+    AppSettings, ImportSkillSelection, InstallSkillInput, MigrationResult, ProjectScope, Skill,
+    SkillFile, SkillRecord, SkillRepo, SkillSource, SkillUpdateInfo, ToolAdapter, UnmanagedSkill,
+    SKILL_SCOPE_GLOBAL, SKILL_SCOPE_PROJECT,
 };
 
 /// 项目级安装与全局同名技能冲突的错误前缀（前端据此给出专属提示）
@@ -146,7 +143,8 @@ impl SkillService {
             Some(raw) if !raw.trim().is_empty() => config::expand_tilde(&raw)?,
             _ => config::get_default_library_dir()?,
         };
-        fs::create_dir_all(&dir).with_context(|| format!("创建技能库目录失败: {}", dir.display()))?;
+        fs::create_dir_all(&dir)
+            .with_context(|| format!("创建技能库目录失败: {}", dir.display()))?;
         Ok(dir)
     }
 
@@ -229,9 +227,28 @@ impl SkillService {
                 let upper = stem.to_ascii_uppercase();
                 if matches!(
                     upper.as_str(),
-                    "CON" | "PRN" | "AUX" | "NUL" | "COM1" | "COM2" | "COM3" | "COM4" | "COM5"
-                        | "COM6" | "COM7" | "COM8" | "COM9" | "LPT1" | "LPT2" | "LPT3" | "LPT4"
-                        | "LPT5" | "LPT6" | "LPT7" | "LPT8" | "LPT9"
+                    "CON"
+                        | "PRN"
+                        | "AUX"
+                        | "NUL"
+                        | "COM1"
+                        | "COM2"
+                        | "COM3"
+                        | "COM4"
+                        | "COM5"
+                        | "COM6"
+                        | "COM7"
+                        | "COM8"
+                        | "COM9"
+                        | "LPT1"
+                        | "LPT2"
+                        | "LPT3"
+                        | "LPT4"
+                        | "LPT5"
+                        | "LPT6"
+                        | "LPT7"
+                        | "LPT8"
+                        | "LPT9"
                 ) {
                     return None;
                 }
@@ -382,8 +399,8 @@ impl SkillService {
                 current.display()
             ));
         }
-        let entries =
-            fs::read_dir(current).with_context(|| format!("读取目录失败: {}", current.display()))?;
+        let entries = fs::read_dir(current)
+            .with_context(|| format!("读取目录失败: {}", current.display()))?;
         for entry in entries {
             let entry = entry?;
             let name = entry.file_name().to_string_lossy().to_string();
@@ -1190,7 +1207,9 @@ impl SkillService {
         let Some(source_rel) = Self::sanitize_skill_source_path(raw_directory) else {
             return Ok(None);
         };
-        let Some(install_name) = source_rel.file_name().map(|n| n.to_string_lossy().to_string())
+        let Some(install_name) = source_rel
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
         else {
             return Ok(None);
         };
@@ -1363,7 +1382,10 @@ impl SkillService {
 
         let canonical_root = root.canonicalize()?;
         let lexical_source = root.join(relative);
-        if fs::symlink_metadata(&lexical_source)?.file_type().is_symlink() {
+        if fs::symlink_metadata(&lexical_source)?
+            .file_type()
+            .is_symlink()
+        {
             return Err(anyhow!(
                 "技能目录不能是符号链接: {}",
                 lexical_source.display()
@@ -1400,7 +1422,10 @@ impl SkillService {
         Ok(())
     }
 
-    fn open_skill_file_without_following_links(path: &Path, canonical_root: &Path) -> Result<fs::File> {
+    fn open_skill_file_without_following_links(
+        path: &Path,
+        canonical_root: &Path,
+    ) -> Result<fs::File> {
         let mut options = OpenOptions::new();
         options.read(true);
         #[cfg(target_os = "windows")]
@@ -1519,10 +1544,8 @@ impl SkillService {
                 if !canonical_file.starts_with(canonical_root) {
                     return Err(anyhow!("技能文件已移出工具目录: {}", source_path.display()));
                 }
-                let mut source_file = Self::open_skill_file_without_following_links(
-                    &canonical_file,
-                    canonical_root,
-                )?;
+                let mut source_file =
+                    Self::open_skill_file_without_following_links(&canonical_file, canonical_root)?;
                 let mut destination_file = OpenOptions::new()
                     .write(true)
                     .create_new(true)
@@ -1929,15 +1952,14 @@ impl SkillService {
         let (temp_guard, used_branch) = github::download_repo_with_timeout(&repo).await?;
         let temp_dir = temp_guard.path();
 
-        let source = Self::resolve_skill_source_dir(temp_dir, &directory)?
-            .ok_or_else(|| {
-                let missing = temp_dir.join(&source_rel).display().to_string();
-                anyhow!(format_skill_error(
-                    "SKILL_DIR_NOT_FOUND",
-                    &[("path", &missing)],
-                    Some("checkRepoUrl"),
-                ))
-            })?;
+        let source = Self::resolve_skill_source_dir(temp_dir, &directory)?.ok_or_else(|| {
+            let missing = temp_dir.join(&source_rel).display().to_string();
+            anyhow!(format_skill_error(
+                "SKILL_DIR_NOT_FOUND",
+                &[("path", &missing)],
+                Some("checkRepoUrl"),
+            ))
+        })?;
         let canonical_temp = temp_dir
             .canonicalize()
             .unwrap_or_else(|_| temp_dir.to_path_buf());
@@ -1960,8 +1982,7 @@ impl SkillService {
         let source_url = github::build_skill_doc_url(&owner, &repo_name, &used_branch, &doc_path);
 
         // 最新 commit 也属网络 I/O，在拿锁前完成
-        let current_commit =
-            github::fetch_latest_commit(&owner, &repo_name, &used_branch).await;
+        let current_commit = github::fetch_latest_commit(&owner, &repo_name, &used_branch).await;
 
         // 落盘 + 入库在同一临界区
         let _guard = state_write_guard();
@@ -2085,9 +2106,9 @@ impl SkillService {
                 }
                 if !added.is_empty() {
                     let deployed = Self::deploy_to_tools(db, &updated, &added);
-                    updated.enabled_tools.retain(|id| {
-                        existing.enabled_tools.contains(id) || deployed.contains(id)
-                    });
+                    updated
+                        .enabled_tools
+                        .retain(|id| existing.enabled_tools.contains(id) || deployed.contains(id));
                     db.update_skill_enabled_tools(&updated.id, &updated.enabled_tools)?;
                 }
                 log::info!("Skill {} 已存在，补充工具分发状态", updated.name);
@@ -2230,10 +2251,7 @@ impl SkillService {
                 source_url,
                 source_github_detected: false,
                 current_commit,
-                display_name: input
-                    .display_name
-                    .clone()
-                    .filter(|d| !d.trim().is_empty()),
+                display_name: input.display_name.clone().filter(|d| !d.trim().is_empty()),
                 input_description: input.description.clone(),
                 tags: input.tags.clone().unwrap_or_default(),
                 enabled_tools,
@@ -2490,12 +2508,8 @@ impl SkillService {
         } else {
             None
         };
-        let install_name = Self::derive_scanned_install_name(
-            skill_dir,
-            temp_root,
-            zip_stem,
-            meta.as_ref(),
-        )?;
+        let install_name =
+            Self::derive_scanned_install_name(skill_dir, temp_root, zip_stem, meta.as_ref())?;
         let record = Self::install_dir_to_project(
             db,
             project,
@@ -2533,19 +2547,19 @@ impl SkillService {
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_default();
-        let install_name = if skill_dir == temp_root || dir_name.is_empty() || dir_name.starts_with('.')
-        {
-            meta.and_then(|m| m.name.as_deref())
-                .and_then(Self::sanitize_install_name)
-                .or_else(|| zip_stem.and_then(Self::sanitize_install_name))
-        } else {
-            Self::sanitize_install_name(&dir_name)
-                .or_else(|| {
-                    meta.and_then(|m| m.name.as_deref())
-                        .and_then(Self::sanitize_install_name)
-                })
-                .or_else(|| zip_stem.and_then(Self::sanitize_install_name))
-        };
+        let install_name =
+            if skill_dir == temp_root || dir_name.is_empty() || dir_name.starts_with('.') {
+                meta.and_then(|m| m.name.as_deref())
+                    .and_then(Self::sanitize_install_name)
+                    .or_else(|| zip_stem.and_then(Self::sanitize_install_name))
+            } else {
+                Self::sanitize_install_name(&dir_name)
+                    .or_else(|| {
+                        meta.and_then(|m| m.name.as_deref())
+                            .and_then(Self::sanitize_install_name)
+                    })
+                    .or_else(|| zip_stem.and_then(Self::sanitize_install_name))
+            };
         install_name.ok_or_else(|| {
             anyhow!(format_skill_error(
                 "INVALID_SKILL_DIRECTORY",
@@ -2736,7 +2750,10 @@ impl SkillService {
     /// git 识别失败时，按目录名在 skills.sh 注册表精确匹配来源（联网；失败/无匹配 → 纯本地）。
     /// 目录名未命中时，再用 SKILL.md frontmatter 的技能名匹配一次（安装目录名可能是仓库名而非技能注册名）。
     /// 返回 (repo "owner/repo", registry_id)。
-    async fn match_registry_source(install_name: &str, skill_name: Option<&str>) -> Option<(String, String)> {
+    async fn match_registry_source(
+        install_name: &str,
+        skill_name: Option<&str>,
+    ) -> Option<(String, String)> {
         // Unit tests must stay offline; their source attribution is covered with local Git fixtures.
         if cfg!(test) {
             return None;
@@ -2768,10 +2785,9 @@ impl SkillService {
             .await
             .map_err(|e| log::warn!("skills.sh 来源匹配失败（保持纯本地）: {e}"))
             .ok()?;
-        let matched = result
-            .skills
-            .into_iter()
-            .find(|s| s.name.eq_ignore_ascii_case(key) || s.display_name.eq_ignore_ascii_case(key))?;
+        let matched = result.skills.into_iter().find(|s| {
+            s.name.eq_ignore_ascii_case(key) || s.display_name.eq_ignore_ascii_case(key)
+        })?;
         let repo = matched.repo.clone()?;
         log::info!("本地技能「{key}」匹配到 skills.sh 来源: {repo}");
         Some((repo, matched.id))
@@ -2915,9 +2931,9 @@ impl SkillService {
                     }
                 }
                 let deployed = Self::deploy_to_tools(db, &updated, &added);
-                updated.enabled_tools.retain(|id| {
-                    existing.enabled_tools.contains(id) || deployed.contains(id)
-                });
+                updated
+                    .enabled_tools
+                    .retain(|id| existing.enabled_tools.contains(id) || deployed.contains(id));
                 db.update_skill_enabled_tools(&updated.id, &updated.enabled_tools)?;
                 return Ok(updated);
             }
@@ -3255,8 +3271,10 @@ impl SkillService {
         match skill.source_subpath.as_deref().filter(|s| !s.is_empty()) {
             Some(subpath) => remote_directory.eq_ignore_ascii_case(subpath),
             None => {
-                let remote_install_name =
-                    remote_directory.rsplit('/').next().unwrap_or(remote_directory);
+                let remote_install_name = remote_directory
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(remote_directory);
                 remote_install_name.eq_ignore_ascii_case(&skill.directory)
             }
         }
@@ -3306,8 +3324,7 @@ impl SkillService {
                 }
             };
             let temp_dir = temp_guard.path();
-            let latest_commit =
-                github::fetch_latest_commit(owner, name, &used_branch).await;
+            let latest_commit = github::fetch_latest_commit(owner, name, &used_branch).await;
 
             // 扫描远端仓库中的全部技能目录
             let mut remote_dirs: Vec<(String, String)> = Vec::new();
@@ -3338,16 +3355,16 @@ impl SkillService {
                     }
                     continue;
                 };
-                let remote_skill_dir = match Self::resolve_skill_source_dir(temp_dir, remote_directory)
-                {
-                    Ok(Some(dir)) => dir,
-                    Ok(None) => continue,
-                    // 解析阶段可能因歧义等多匹配报错，跳过该技能的更新检查
-                    Err(e) => {
-                        log::warn!("解析远程技能目录失败 {}: {e}", skill.id);
-                        continue;
-                    }
-                };
+                let remote_skill_dir =
+                    match Self::resolve_skill_source_dir(temp_dir, remote_directory) {
+                        Ok(Some(dir)) => dir,
+                        Ok(None) => continue,
+                        // 解析阶段可能因歧义等多匹配报错，跳过该技能的更新检查
+                        Err(e) => {
+                            log::warn!("解析远程技能目录失败 {}: {e}", skill.id);
+                            continue;
+                        }
+                    };
                 let remote_hash = match Self::compute_dir_hash(&remote_skill_dir) {
                     Ok(h) => h,
                     Err(e) => {
@@ -3383,7 +3400,8 @@ impl SkillService {
                     _ => None,
                 };
 
-                let commit_changed = latest_commit.is_some() && latest_commit != skill.current_commit;
+                let commit_changed =
+                    latest_commit.is_some() && latest_commit != skill.current_commit;
                 let hash_changed = local_hash.as_deref() != Some(&remote_hash);
                 let has_update = hash_changed || commit_changed;
 
@@ -3458,13 +3476,14 @@ impl SkillService {
                     Some("checkRepoUrl"),
                 ))
             })?;
-        let source = Self::resolve_skill_source_dir(temp_dir, &remote_match.0)?.ok_or_else(|| {
-            anyhow!(format_skill_error(
-                "SKILL_DIR_NOT_FOUND",
-                &[("path", &remote_match.0)],
-                Some("checkRepoUrl"),
-            ))
-        })?;
+        let source =
+            Self::resolve_skill_source_dir(temp_dir, &remote_match.0)?.ok_or_else(|| {
+                anyhow!(format_skill_error(
+                    "SKILL_DIR_NOT_FOUND",
+                    &[("path", &remote_match.0)],
+                    Some("checkRepoUrl"),
+                ))
+            })?;
 
         let current_commit = github::fetch_latest_commit(owner, name, &used_branch).await;
 
@@ -3494,8 +3513,7 @@ impl SkillService {
                     };
                     let linked = dest_root.join(&current.directory);
                     // symlink 指向 dest，内容更新自动可见；copy 需要重新替换
-                    if (linked.exists() || Self::is_symlink(&linked))
-                        && !Self::is_symlink(&linked)
+                    if (linked.exists() || Self::is_symlink(&linked)) && !Self::is_symlink(&linked)
                     {
                         Self::replace_dest_with_copy(&dest, &linked, &current.directory)?;
                     }
@@ -3526,8 +3544,7 @@ impl SkillService {
 
         let new_hash = Self::compute_dir_hash(&dest).ok();
         let skill_md = dest.join("SKILL.md");
-        let (new_name, new_description) =
-            Self::read_skill_name_desc(&skill_md, &current.directory);
+        let (new_name, new_description) = Self::read_skill_name_desc(&skill_md, &current.directory);
         let source_url = current.source_url.clone();
 
         let mut updated = current.clone();
@@ -3666,7 +3683,13 @@ impl SkillService {
                 skill
                     .enabled_tools
                     .iter()
-                    .map(|tool_id| format!("{}:{}", tool_id.to_lowercase(), skill.directory.to_lowercase()))
+                    .map(|tool_id| {
+                        format!(
+                            "{}:{}",
+                            tool_id.to_lowercase(),
+                            skill.directory.to_lowercase()
+                        )
+                    })
                     .collect::<Vec<_>>()
             })
             .collect();
@@ -3683,7 +3706,13 @@ impl SkillService {
                 skill
                     .enabled_tools
                     .iter()
-                    .map(|tool_id| format!("{}:{}", tool_id.to_lowercase(), relative_path.to_lowercase()))
+                    .map(|tool_id| {
+                        format!(
+                            "{}:{}",
+                            tool_id.to_lowercase(),
+                            relative_path.to_lowercase()
+                        )
+                    })
                     .collect()
             })
             .collect();
@@ -3710,7 +3739,11 @@ impl SkillService {
             let mut skill_dirs = Vec::new();
             Self::collect_unmanaged_skill_dirs(&root, &root, &mut skill_dirs)?;
             for (relative_path, path) in skill_dirs {
-                let source_key = format!("{}:{}", tool.id.to_lowercase(), relative_path.to_lowercase());
+                let source_key = format!(
+                    "{}:{}",
+                    tool.id.to_lowercase(),
+                    relative_path.to_lowercase()
+                );
                 let destination_key = format!(
                     "{}:{}",
                     tool.id.to_lowercase(),
@@ -4074,10 +4107,10 @@ impl SkillService {
                 },
                 name: name.clone(),
                 display_name: name,
-            description,
-            display_description: None,
-            description_status: "pending".to_string(),
-            directory: dir_name.clone(),
+                description,
+                display_description: None,
+                description_status: "pending".to_string(),
+                directory: dir_name.clone(),
                 tags: vec![],
                 scope: SKILL_SCOPE_GLOBAL.to_string(),
                 project_id: None,
@@ -4318,8 +4351,8 @@ impl SkillService {
                 .and_then(|id| projects.iter().find(|p| p.0 == id).map(|p| p.1.clone()))
         });
 
-        let installed_at = iso_time(record.installed_at)
-            .unwrap_or_else(|| UNKNOWN_TIME_LABEL.to_string());
+        let installed_at =
+            iso_time(record.installed_at).unwrap_or_else(|| UNKNOWN_TIME_LABEL.to_string());
         let last_updated = if record.updated_at == 0 {
             installed_at.clone()
         } else {
@@ -4345,9 +4378,7 @@ impl SkillService {
                                     .and_then(|p| Self::project_tool_root(t, p))
                                     .map(|root| root.join(&directory))
                             } else {
-                                Self::tool_root(t)
-                                    .ok()
-                                    .map(|root| root.join(&directory))
+                                Self::tool_root(t).ok().map(|root| root.join(&directory))
                             }
                             .unwrap_or_default();
                             dest.exists() || Self::is_symlink(&dest)
@@ -4393,7 +4424,10 @@ impl SkillService {
             },
             directory: record.directory.clone(),
             description: if record.description_status == "ready" {
-                record.display_description.clone().unwrap_or_else(|| "简介生成失败，可在设置中重试".to_string())
+                record
+                    .display_description
+                    .clone()
+                    .unwrap_or_else(|| "简介生成失败，可在设置中重试".to_string())
             } else if record.description_status == "failed" {
                 "简介生成失败，可在设置中重试".to_string()
             } else {
@@ -4412,9 +4446,7 @@ impl SkillService {
                 subpath: record.source_subpath.clone(),
                 author: record.source_author.clone(),
                 registry_id: record.source_registry_id.clone(),
-                is_git_hub_detected_from_local: record
-                    .source_github_detected
-                    .then_some(true),
+                is_git_hub_detected_from_local: record.source_github_detected.then_some(true),
                 download_url: None,
             },
             current_commit,
@@ -4597,6 +4629,10 @@ impl SkillService {
                 .get_setting("confirm_on_uninstall")?
                 .map(|v| v == "true")
                 .unwrap_or(true),
+            close_to_tray: db
+                .get_setting("close_to_tray")?
+                .map(|v| v == "true")
+                .unwrap_or(true),
         })
     }
 
@@ -4636,7 +4672,11 @@ impl SkillService {
         db.set_setting("distribution_method", &settings.distribution_method)?;
         db.set_setting(
             "auto_check_update",
-            if settings.auto_check_update { "true" } else { "false" },
+            if settings.auto_check_update {
+                "true"
+            } else {
+                "false"
+            },
         )?;
         db.set_setting(
             "check_interval_days",
@@ -4647,6 +4687,14 @@ impl SkillService {
         db.set_setting(
             "confirm_on_uninstall",
             if settings.confirm_on_uninstall {
+                "true"
+            } else {
+                "false"
+            },
+        )?;
+        db.set_setting(
+            "close_to_tray",
+            if settings.close_to_tray {
                 "true"
             } else {
                 "false"
@@ -4787,7 +4835,10 @@ impl SkillService {
             // 1. 移动原文件到中央库命名空间（rename 优先，跨盘 copy+delete）
             if let Some(parent) = new_dir.parent() {
                 if let Err(e) = fs::create_dir_all(parent) {
-                    log::error!("项目存储布局迁移 {} 失败（创建命名空间目录）: {e}", record.id);
+                    log::error!(
+                        "项目存储布局迁移 {} 失败（创建命名空间目录）: {e}",
+                        record.id
+                    );
                     continue;
                 }
             }
@@ -4819,7 +4870,10 @@ impl SkillService {
                     SyncMethod::Copy => Self::copy_dir_recursive(&new_dir, &legacy)?,
                     SyncMethod::Auto => {
                         if let Err(err) = Self::create_symlink(&new_dir, &legacy) {
-                            log::warn!("项目存储布局迁移 {}：symlink 失败，回退复制: {err}", record.id);
+                            log::warn!(
+                                "项目存储布局迁移 {}：symlink 失败，回退复制: {err}",
+                                record.id
+                            );
                             Self::copy_dir_recursive(&new_dir, &legacy)?;
                         }
                     }
@@ -4838,7 +4892,10 @@ impl SkillService {
                 if let Err(e) =
                     db.update_skill_enabled_tools(&record.id, &["claude-code".to_string()])
                 {
-                    log::warn!("项目存储布局迁移 {}：补默认 enabled_tools 失败: {e}", record.id);
+                    log::warn!(
+                        "项目存储布局迁移 {}：补默认 enabled_tools 失败: {e}",
+                        record.id
+                    );
                 }
             }
             migrated += 1;
@@ -5046,8 +5103,10 @@ mod tests {
         fs::write(second.join("b"), b"y").unwrap();
         let root = temp.path().canonicalize().unwrap();
 
-        let first_hash = SkillService::hash_import_dir(&first.canonicalize().unwrap(), &root).unwrap();
-        let second_hash = SkillService::hash_import_dir(&second.canonicalize().unwrap(), &root).unwrap();
+        let first_hash =
+            SkillService::hash_import_dir(&first.canonicalize().unwrap(), &root).unwrap();
+        let second_hash =
+            SkillService::hash_import_dir(&second.canonicalize().unwrap(), &root).unwrap();
 
         assert_ne!(first_hash, second_hash);
     }
@@ -5247,8 +5306,8 @@ mod tests {
         let zip_path = base.path().join("bomb.zip");
         fs::write(&zip_path, bytes).unwrap();
 
-        let err = SkillService::extract_local_zip_in(&zip_path, base.path())
-            .expect_err("must fail");
+        let err =
+            SkillService::extract_local_zip_in(&zip_path, base.path()).expect_err("must fail");
         assert!(err.to_string().contains("ARCHIVE_TOO_MANY_ENTRIES"));
         // 除了 zip 文件本身，base 里不能有解压残留
         let leftovers: Vec<_> = fs::read_dir(base.path())
@@ -5290,7 +5349,10 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         write_skill(&temp.path().join("skills/foo"));
         let found = SkillService::resolve_skill_source_dir(temp.path(), "skills/foo").unwrap();
-        assert_eq!(found.as_deref(), Some(temp.path().join("skills/foo").as_path()));
+        assert_eq!(
+            found.as_deref(),
+            Some(temp.path().join("skills/foo").as_path())
+        );
     }
 
     #[test]
@@ -5311,8 +5373,8 @@ mod tests {
         // wrapper 目录名匹配但没有 SKILL.md，真实技能在内层
         fs::create_dir_all(temp.path().join("ast-grep")).unwrap();
         write_skill(&temp.path().join("ast-grep/agent-skill"));
-        let found = SkillService::resolve_skill_source_dir(temp.path(), "ast-grep/agent-skill")
-            .unwrap();
+        let found =
+            SkillService::resolve_skill_source_dir(temp.path(), "ast-grep/agent-skill").unwrap();
         assert_eq!(
             found.as_deref(),
             Some(temp.path().join("ast-grep/agent-skill").as_path())
@@ -5324,11 +5386,9 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         fs::create_dir_all(temp.path().join("a/b")).unwrap();
         fs::write(temp.path().join("a/b/readme.txt"), "x").unwrap();
-        assert!(
-            SkillService::resolve_skill_source_dir(temp.path(), "a/b")
-                .unwrap()
-                .is_none()
-        );
+        assert!(SkillService::resolve_skill_source_dir(temp.path(), "a/b")
+            .unwrap()
+            .is_none());
     }
 
     // ========== 仓库坐标校验 ==========
@@ -5347,7 +5407,12 @@ mod tests {
     fn validate_repo_ref_rejects_url_hijacking() {
         assert!(SkillService::validate_repo_ref("evil/owner", "repo", "main").is_err());
         assert!(SkillService::validate_repo_ref("owner", "..", "main").is_err());
-        assert!(SkillService::validate_repo_ref("owner", "repo", "../../../releases/download/v1/evil").is_err());
+        assert!(SkillService::validate_repo_ref(
+            "owner",
+            "repo",
+            "../../../releases/download/v1/evil"
+        )
+        .is_err());
         assert!(SkillService::validate_repo_ref("owner", "repo", "a/./b").is_err());
         assert!(SkillService::validate_repo_ref("owner", "repo", "a%2fb").is_err());
         assert!(SkillService::validate_repo_ref("owner", "repo", "branch#frag").is_err());
@@ -5538,7 +5603,12 @@ mod tests {
         db
     }
 
-    fn test_skill_record(id: &str, directory: &str, scope: &str, project_path: Option<&str>) -> SkillRecord {
+    fn test_skill_record(
+        id: &str,
+        directory: &str,
+        scope: &str,
+        project_path: Option<&str>,
+    ) -> SkillRecord {
         SkillRecord {
             id: id.to_string(),
             name: directory.to_string(),
@@ -5701,10 +5771,7 @@ mod tests {
         // 用来确定性触发重部署失败分支
         let blocker = temp.path().join("not-a-dir");
         fs::write(&blocker, "x").unwrap();
-        let broken_tool = test_tool(
-            "broken",
-            &blocker.join("tools").display().to_string(),
-        );
+        let broken_tool = test_tool("broken", &blocker.join("tools").display().to_string());
         db.insert_tool_adapter(&broken_tool, 0).unwrap();
 
         let mut record = test_skill_record("owner/repo:x", "skill-x", SKILL_SCOPE_GLOBAL, None);
@@ -5770,14 +5837,26 @@ mod tests {
         // 末段名匹配（含大小写差异）
         assert!(SkillService::remote_dir_matches(&skill, "my-skill"));
         assert!(SkillService::remote_dir_matches(&skill, "skills/My-Skill"));
-        assert!(SkillService::remote_dir_matches(&skill, "catalog/deep/MY-SKILL"));
+        assert!(SkillService::remote_dir_matches(
+            &skill,
+            "catalog/deep/MY-SKILL"
+        ));
 
         // 有 source_subpath 时按全路径段匹配，末段相同但路径不同不算
         let mut subpathed = skill.clone();
         subpathed.source_subpath = Some("skills/my-skill".to_string());
-        assert!(SkillService::remote_dir_matches(&subpathed, "skills/my-skill"));
-        assert!(SkillService::remote_dir_matches(&subpathed, "SKILLS/My-Skill"));
-        assert!(!SkillService::remote_dir_matches(&subpathed, "other/my-skill"));
+        assert!(SkillService::remote_dir_matches(
+            &subpathed,
+            "skills/my-skill"
+        ));
+        assert!(SkillService::remote_dir_matches(
+            &subpathed,
+            "SKILLS/My-Skill"
+        ));
+        assert!(!SkillService::remote_dir_matches(
+            &subpathed,
+            "other/my-skill"
+        ));
     }
 
     #[test]
@@ -6049,13 +6128,20 @@ mod tests {
             Some(".claude/skills")
         );
         // ~/.gemini/config/skills → .gemini/config/skills（多级相对路径）
-        let tool = test_tool("ag", &home.join(".gemini/config/skills").display().to_string());
+        let tool = test_tool(
+            "ag",
+            &home.join(".gemini/config/skills").display().to_string(),
+        );
         assert_eq!(
             SkillService::tool_project_subdir(&tool, &home).as_deref(),
             Some(".gemini/config/skills")
         );
         // 本地目录不在 home 下 → 不参与项目级分发
-        let outside = if cfg!(windows) { r"D:\tools\skills" } else { "/opt/tools/skills" };
+        let outside = if cfg!(windows) {
+            r"D:\tools\skills"
+        } else {
+            "/opt/tools/skills"
+        };
         let tool = test_tool("custom", outside);
         assert!(SkillService::tool_project_subdir(&tool, &home).is_none());
         // 等于 home 本身 → 无相对路径
@@ -6072,10 +6158,14 @@ mod tests {
         let home = config::get_home_dir().expect("home");
         let project_root = temp.path().join("proj");
         fs::create_dir_all(&project_root).unwrap();
-        let project = (1i64, "proj".to_string(), project_root.display().to_string(), 1);
+        let project = (
+            1i64,
+            "proj".to_string(),
+            project_root.display().to_string(),
+            1,
+        );
 
-        let tool_a =
-            test_tool_under_home("tool-a", &home, ".claude/skills");
+        let tool_a = test_tool_under_home("tool-a", &home, ".claude/skills");
         let tool_b = test_tool_under_home("tool-b", &home, ".codex/skills");
         db.insert_tool_adapter(&tool_a, 0).unwrap();
         db.insert_tool_adapter(&tool_b, 1).unwrap();
@@ -6097,10 +6187,7 @@ mod tests {
         // 两个工具的项目内目录都出现分发（symlink 或 copy 均可，探测内容即可）
         for subdir in [".claude/skills", ".codex/skills"] {
             let dest = project_root.join(subdir).join("my-skill");
-            assert!(
-                dest.join("SKILL.md").is_file(),
-                "{subdir} 应存在分发内容"
-            );
+            assert!(dest.join("SKILL.md").is_file(), "{subdir} 应存在分发内容");
         }
 
         // 记录实际参与分发的工具
@@ -6124,7 +6211,12 @@ mod tests {
 
         let source = write_source_skill(temp.path(), "dup-skill");
         for (idx, root) in [&project_a, &project_b].iter().enumerate() {
-            let project = (idx as i64 + 1, "p".to_string(), root.display().to_string(), 1);
+            let project = (
+                idx as i64 + 1,
+                "p".to_string(),
+                root.display().to_string(),
+                1,
+            );
             SkillService::install_dir_to_project(
                 &db,
                 &project,
@@ -6156,7 +6248,12 @@ mod tests {
         let home = config::get_home_dir().expect("home");
         let project_root = temp.path().join("proj");
         fs::create_dir_all(&project_root).unwrap();
-        let project = (1i64, "proj".to_string(), project_root.display().to_string(), 1);
+        let project = (
+            1i64,
+            "proj".to_string(),
+            project_root.display().to_string(),
+            1,
+        );
 
         // tool-a 正常；tool-b 推导出的项目内目录 <proj>/.codex/skills 被普通文件
         // <proj>/.codex 挡住，create_dir_all 必失败
@@ -6197,10 +6294,14 @@ mod tests {
         let home = config::get_home_dir().expect("home");
         let project_root = temp.path().join("proj");
         fs::create_dir_all(&project_root).unwrap();
-        let project = (1i64, "proj".to_string(), project_root.display().to_string(), 1);
+        let project = (
+            1i64,
+            "proj".to_string(),
+            project_root.display().to_string(),
+            1,
+        );
 
-        let tool_a =
-            test_tool_under_home("tool-a", &home, ".claude/skills");
+        let tool_a = test_tool_under_home("tool-a", &home, ".claude/skills");
         db.insert_tool_adapter(&tool_a, 0).unwrap();
 
         let source = write_source_skill(temp.path(), "my-skill");
@@ -6240,10 +6341,14 @@ mod tests {
         let home = config::get_home_dir().expect("home");
         let project_root = temp.path().join("proj");
         fs::create_dir_all(&project_root).unwrap();
-        let project = (1i64, "proj".to_string(), project_root.display().to_string(), 1);
+        let project = (
+            1i64,
+            "proj".to_string(),
+            project_root.display().to_string(),
+            1,
+        );
 
-        let tool_a =
-            test_tool_under_home("tool-a", &home, ".claude/skills");
+        let tool_a = test_tool_under_home("tool-a", &home, ".claude/skills");
         let tool_b = test_tool_under_home("tool-b", &home, ".codex/skills");
         db.insert_tool_adapter(&tool_a, 0).unwrap();
         db.insert_tool_adapter(&tool_b, 1).unwrap();
@@ -6261,28 +6366,22 @@ mod tests {
 
         // 开启 tool-b：只影响 tool-b 的项目内目录
         SkillService::toggle_tool(&db, &record.id, "tool-b", true).expect("toggle on");
-        assert!(
-            project_root
-                .join(".codex/skills/my-skill")
-                .join("SKILL.md")
-                .is_file()
-        );
-        assert!(
-            project_root
-                .join(".claude/skills/my-skill")
-                .join("SKILL.md")
-                .is_file()
-        );
+        assert!(project_root
+            .join(".codex/skills/my-skill")
+            .join("SKILL.md")
+            .is_file());
+        assert!(project_root
+            .join(".claude/skills/my-skill")
+            .join("SKILL.md")
+            .is_file());
 
         // 关闭 tool-a：只移除 tool-a 的分发
         SkillService::toggle_tool(&db, &record.id, "tool-a", false).expect("toggle off");
         assert!(!project_root.join(".claude/skills/my-skill").exists());
-        assert!(
-            project_root
-                .join(".codex/skills/my-skill")
-                .join("SKILL.md")
-                .is_file()
-        );
+        assert!(project_root
+            .join(".codex/skills/my-skill")
+            .join("SKILL.md")
+            .is_file());
 
         let updated = db.get_skill(&record.id).unwrap().expect("record");
         assert_eq!(updated.enabled_tools, vec!["tool-b".to_string()]);

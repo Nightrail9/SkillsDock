@@ -96,6 +96,7 @@ export interface AppSettings {
   theme: AppTheme;
   locale: AppLocale;
   confirmOnUninstall: boolean;
+  closeToTray: boolean;
 }
 
 /** LLM 连接配置；API Key 不会返回给前端。 */

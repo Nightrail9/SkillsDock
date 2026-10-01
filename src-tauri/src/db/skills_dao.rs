@@ -222,7 +222,11 @@ impl Database {
     }
 
     /// 更新技能原始描述（用于从 SKILL.md 或 README 回填缺失的元数据）
-    pub fn update_skill_raw_description(&self, id: &str, description: &str) -> Result<bool, AppError> {
+    pub fn update_skill_raw_description(
+        &self,
+        id: &str,
+        description: &str,
+    ) -> Result<bool, AppError> {
         let conn = lock_conn!(self.conn);
         let affected = conn
             .execute(
@@ -265,7 +269,10 @@ impl Database {
             let mut changed = 0;
             for id in ids {
                 changed += tx
-                    .execute("UPDATE skills SET tags = ?1 WHERE id = ?2", params![json, id])
+                    .execute(
+                        "UPDATE skills SET tags = ?1 WHERE id = ?2",
+                        params![json, id],
+                    )
                     .map_err(|e| AppError::Database(e.to_string()))?;
             }
             Ok(changed)
@@ -372,7 +379,10 @@ mod tests {
         s.tags = vec!["rust".to_string(), "cli".to_string()];
         db.save_skill(&s).expect("save");
 
-        let stored = db.get_skill("owner/repo:a").expect("query").expect("exists");
+        let stored = db
+            .get_skill("owner/repo:a")
+            .expect("query")
+            .expect("exists");
         assert_eq!(stored.enabled_tools, vec!["claude-code", "codex"]);
         assert_eq!(stored.tags, vec!["rust", "cli"]);
 
@@ -380,7 +390,10 @@ mod tests {
         assert!(db
             .update_skill_enabled_tools("owner/repo:a", &["hermes".to_string()])
             .expect("update"));
-        let stored = db.get_skill("owner/repo:a").expect("query").expect("exists");
+        let stored = db
+            .get_skill("owner/repo:a")
+            .expect("query")
+            .expect("exists");
         assert_eq!(stored.enabled_tools, vec!["hermes"]);
 
         // 缺失 id 返回 false
@@ -450,6 +463,8 @@ mod tests {
         assert_eq!(tools[0].default_path, "~/.claude/skills");
 
         // 自定义工具删除保护：内置行不可删
-        assert!(!db.delete_tool_adapter("claude-code").expect("builtin protected"));
+        assert!(!db
+            .delete_tool_adapter("claude-code")
+            .expect("builtin protected"));
     }
 }

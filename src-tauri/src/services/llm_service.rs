@@ -118,7 +118,9 @@ impl LlmService {
             provider_name: db.get_setting("llm_provider_name")?.unwrap_or_default(),
             base_url: db.get_setting("llm_base_url")?.unwrap_or_default(),
             model: db.get_setting("llm_model")?.unwrap_or_default(),
-            language: db.get_setting("llm_language")?.unwrap_or_else(|| "zh".to_string()),
+            language: db
+                .get_setting("llm_language")?
+                .unwrap_or_else(|| "zh".to_string()),
         })
     }
 
@@ -127,11 +129,21 @@ impl LlmService {
         db.set_setting("llm_provider_name", &provider_name)?;
         db.set_setting("llm_base_url", &base_url)?;
         db.set_setting("llm_model", &model)?;
-        if let Some(lang) = input.language.as_deref().map(str::trim).filter(|l| !l.is_empty()) {
+        if let Some(lang) = input
+            .language
+            .as_deref()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+        {
             let normalized_lang = if lang == "en" { "en" } else { "zh" };
             db.set_setting("llm_language", normalized_lang)?;
         }
-        if let Some(key) = input.api_key.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
+        if let Some(key) = input
+            .api_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+        {
             db.set_setting("llm_api_key", key)?;
         }
         Self::get_config(db)
@@ -245,10 +257,7 @@ impl LlmService {
                         && (response.status() == StatusCode::TOO_MANY_REQUESTS
                             || response.status().is_server_error()) =>
                 {
-                    log::warn!(
-                        "LLM 请求返回 {}，1 秒后重试: {endpoint}",
-                        response.status()
-                    );
+                    log::warn!("LLM 请求返回 {}，1 秒后重试: {endpoint}", response.status());
                     tokio::time::sleep(Duration::from_secs(1)).await;
                 }
                 Ok(response) if attempt == 0 && response.status() == StatusCode::BAD_REQUEST => {
@@ -256,7 +265,9 @@ impl LlmService {
                     let lower = body_text.to_lowercase();
                     // 检测是否因不支持 system message 或 temperature 参数导致 400
                     if lower.contains("system") || lower.contains("temperature") {
-                        log::info!("检测到模型不支持 system 或 temperature 参数，降级重试: {body_text}");
+                        log::info!(
+                            "检测到模型不支持 system 或 temperature 参数，降级重试: {body_text}"
+                        );
                         use_system = false;
                         send_temperature = false;
                         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -293,7 +304,12 @@ impl LlmService {
         input: LlmConfigInput,
     ) -> Result<LlmConnectionTest> {
         let (_, base_url, model) = Self::validate_input(&input)?;
-        let api_key = match input.api_key.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
+        let api_key = match input
+            .api_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+        {
             Some(key) => key.to_string(),
             None => db.get_setting("llm_api_key")?.unwrap_or_default(),
         };
@@ -347,7 +363,9 @@ impl LlmService {
                 if let Some(start) = Self::find_ascii_ignore_case(&s, &open_prefix) {
                     if let Some(rel_gt) = s[start..].find('>') {
                         let content_start = start + rel_gt + 1;
-                        if let Some(rel_close) = Self::find_ascii_ignore_case(&s[content_start..], &close_tag) {
+                        if let Some(rel_close) =
+                            Self::find_ascii_ignore_case(&s[content_start..], &close_tag)
+                        {
                             let close_start = content_start + rel_close;
                             let after = close_start + close_tag.len();
                             let prefix = &s[..start];
@@ -454,7 +472,8 @@ impl LlmService {
         {
             desc.to_string()
         } else {
-            let storage_dir = crate::services::skill_service::SkillService::skill_storage_dir(db, record).ok();
+            let storage_dir =
+                crate::services::skill_service::SkillService::skill_storage_dir(db, record).ok();
             let mut extracted = String::new();
             if let Some(dir) = storage_dir {
                 let skill_md = dir.join("SKILL.md");
@@ -539,8 +558,7 @@ impl LlmService {
             return Err(anyhow!("请先保存完整的模型配置（Base URL 与模型名称）"));
         }
         let api_key = if api_key.trim().is_empty() {
-            db.get_setting("llm_api_key")?
-                .unwrap_or_default()
+            db.get_setting("llm_api_key")?.unwrap_or_default()
         } else {
             api_key.to_string()
         };
@@ -606,10 +624,7 @@ mod tests {
         );
 
         let text2 = "<THINK>大写标签思考过程\n第二行思考</THINK>前端设计组件库";
-        assert_eq!(
-            LlmService::strip_thinking_tags(text2),
-            "前端设计组件库"
-        );
+        assert_eq!(LlmService::strip_thinking_tags(text2), "前端设计组件库");
 
         let text3 = "<thought>思考中...</thought>提供多语言文本总结功能。";
         assert_eq!(
@@ -628,7 +643,8 @@ mod tests {
     fn validates_description_normalizes_and_rejects_empty() {
         // 归一化：过滤思考标签、去反引号、压单行、去空行
         assert_eq!(
-            LlmService::validate_description("<think>思考过程</think>`用于管理技能的简介`").unwrap(),
+            LlmService::validate_description("<think>思考过程</think>`用于管理技能的简介`")
+                .unwrap(),
             "用于管理技能的简介"
         );
         assert_eq!(
@@ -668,7 +684,8 @@ mod tests {
 
     #[test]
     fn extract_content_prefers_content_and_rejects_empty() {
-        let ok = LlmService::extract_content(resp(Some("PONG"), None, Some("stop")), false).unwrap();
+        let ok =
+            LlmService::extract_content(resp(Some("PONG"), None, Some("stop")), false).unwrap();
         assert_eq!(ok, "PONG");
         // 两者皆空：报错带 finish_reason
         let err = LlmService::extract_content(resp(None, None, Some("length")), false).unwrap_err();

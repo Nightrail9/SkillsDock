@@ -146,6 +146,7 @@ let mockState: AppState = {
     theme: 'system',
     locale: 'zh',
     confirmOnUninstall: true,
+    closeToTray: true,
   },
   llmConfig: {
     providerName: '',

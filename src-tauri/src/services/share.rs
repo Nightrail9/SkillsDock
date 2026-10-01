@@ -60,8 +60,7 @@ pub fn create_share_link(records: &[SkillRecord]) -> Result<String> {
         }
         entries.push(ShareSkillEntry {
             name: record.name.clone(),
-            display_name: (!record.display_name.is_empty())
-                .then(|| record.display_name.clone()),
+            display_name: (!record.display_name.is_empty()).then(|| record.display_name.clone()),
             description: record.description.clone(),
             source_type: record.source_type.clone(),
             repo: record.source_repo.clone(),
@@ -72,7 +71,10 @@ pub fn create_share_link(records: &[SkillRecord]) -> Result<String> {
         });
     }
 
-    let payload = SharePayload { v: 1, skills: entries };
+    let payload = SharePayload {
+        v: 1,
+        skills: entries,
+    };
     encode_payload(&payload)
 }
 
@@ -115,7 +117,12 @@ mod tests {
     use super::*;
     use crate::types::SKILL_SCOPE_GLOBAL;
 
-    fn record(id: &str, directory: &str, repo: Option<&str>, registry: Option<&str>) -> SkillRecord {
+    fn record(
+        id: &str,
+        directory: &str,
+        repo: Option<&str>,
+        registry: Option<&str>,
+    ) -> SkillRecord {
         SkillRecord {
             id: id.to_string(),
             name: directory.to_string(),

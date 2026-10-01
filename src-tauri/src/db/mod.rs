@@ -131,8 +131,7 @@ impl Database {
 
     /// 创建内存数据库（用于测试）
     pub fn memory() -> Result<Self, AppError> {
-        let conn =
-            Connection::open_in_memory().map_err(|e| AppError::Database(e.to_string()))?;
+        let conn = Connection::open_in_memory().map_err(|e| AppError::Database(e.to_string()))?;
         Self::wrap(conn)
     }
 
@@ -197,11 +196,17 @@ impl Database {
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|e| AppError::Database(e.to_string()))?;
         columns.sort();
-        if columns.binary_search(&"display_description".to_string()).is_err() {
+        if columns
+            .binary_search(&"display_description".to_string())
+            .is_err()
+        {
             conn.execute("ALTER TABLE skills ADD COLUMN display_description TEXT", [])
                 .map_err(|e| AppError::Database(e.to_string()))?;
         }
-        if columns.binary_search(&"description_status".to_string()).is_err() {
+        if columns
+            .binary_search(&"description_status".to_string())
+            .is_err()
+        {
             conn.execute(
                 "ALTER TABLE skills ADD COLUMN description_status TEXT NOT NULL DEFAULT 'pending'",
                 [],
@@ -261,7 +266,9 @@ impl Database {
     /// 内置工具技能目录是否已检测到（与 SkillService::api_tools 的 detected 语义一致）
     fn tool_path_detected(path: &str) -> bool {
         // 路径展开失败（home 不可用）按未检测到处理
-        config::expand_tilde(path).map(|p| p.is_dir()).unwrap_or(false)
+        config::expand_tilde(path)
+            .map(|p| p.is_dir())
+            .unwrap_or(false)
     }
 
     fn builtin_default_path(tool: &BuiltinToolSeed) -> String {
@@ -628,7 +635,10 @@ impl Database {
         Ok(conn.last_insert_rowid())
     }
 
-    pub fn get_skill_project(&self, id: i64) -> Result<Option<(i64, String, String, i64)>, AppError> {
+    pub fn get_skill_project(
+        &self,
+        id: i64,
+    ) -> Result<Option<(i64, String, String, i64)>, AppError> {
         Ok(self
             .list_skill_projects()?
             .into_iter()
@@ -765,4 +775,3 @@ mod hermes_path_tests {
         assert_eq!(skill.relative_path, "category/existing-skill");
     }
 }
-
