@@ -5,7 +5,7 @@
   <p><a href="./README.md">简体中文</a> · <a href="./README_EN.md">English</a></p>
   <p>
     <a href="https://github.com/Nightrail9/SkillsDock/releases/latest"><img src="https://img.shields.io/github/v/release/Nightrail9/SkillsDock?display_name=tag&sort=semver" alt="Latest release"></a>
-    <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-667eea" alt="Supported platforms">
+    <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS-667eea" alt="Supported platforms">
     <img src="https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri" alt="Tauri 2">
     <img src="https://img.shields.io/badge/local--first-yes-10b981" alt="Local first">
   </p>
