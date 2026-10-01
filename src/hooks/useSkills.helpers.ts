@@ -1,4 +1,18 @@
-import type { Skill } from '../types';
+import type { ImportSkillSelection, Skill, UnmanagedSkill } from '../types';
+
+/**
+ * 将新手引导扫描结果转换为导入请求，并保留每项技能实际发现的工具范围。
+ */
+export function toImportSkillSelections(
+  skills: UnmanagedSkill[],
+): ImportSkillSelection[] {
+  return skills.map((skill) => ({
+    directory: skill.directory,
+    sourceDirectory: skill.sourceDirectory,
+    relativePath: skill.relativePath,
+    toolIds: [...skill.foundIn],
+  }));
+}
 
 /**
  * 合并本次导入结果到已安装缓存，按 id 去重。

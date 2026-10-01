@@ -16,6 +16,7 @@ import {
 import { ToolAdapter, AppSettings, AddToastFn } from '../types';
 import { ToolBrandIcon } from './icons/BrandIcons';
 import { useScanUnmanagedSkills, useImportSkillsFromApps } from '../hooks/useSkills';
+import { toImportSkillSelections } from '../hooks/useSkills.helpers';
 import { useAppState } from '../hooks/useAppState';
 import { collapseHomePath } from '../lib/utils/pathDisplay';
 import { errorToString } from '../lib/errors/skillErrorParser';
@@ -81,7 +82,6 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
 
   if (!isOpen) return null;
 
-  const enabledTools = tools.filter((t) => t.isEnabled);
   const unmanaged = scanQuery.data ?? [];
 
   /** Tauri 原生目录选择 */
@@ -111,12 +111,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
   const handleImportAll = () => {
     if (unmanaged.length === 0) return;
     importMutation.mutate(
-      unmanaged.map((u) => ({
-        directory: u.directory,
-        sourceDirectory: u.sourceDirectory,
-        relativePath: u.relativePath,
-        toolIds: enabledTools.map((t) => t.id),
-      })),
+      toImportSkillSelections(unmanaged),
       {
         onSuccess: (imported) => {
           setMigrationDone(true);
