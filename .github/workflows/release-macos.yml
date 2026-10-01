@@ -37,21 +37,9 @@ jobs:
         working-directory: .
         run: echo "version=$(node -p "require('./src-tauri/tauri.conf.json').version")" >> "$GITHUB_OUTPUT"
 
-      - name: 构建 dmg / app.tar.gz
+      - name: 构建 dmg
         working-directory: src-tauri
-        run: npx tauri build --bundles dmg,app --target ${{ matrix.target }}
-
-      - name: 打包 .app 为 app.tar.gz（供进阶用户直接解压使用）
-        working-directory: src-tauri
-        env:
-          APP_VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          case "${{ matrix.target }}" in
-            aarch64-apple-darwin) ARCH=aarch64 ;;
-            x86_64-apple-darwin)  ARCH=x64 ;;
-          esac
-          tar -czf "SkillDock-${APP_VERSION}-${ARCH}.app.tar.gz" -C "target/${{ matrix.target }}/release/bundle/macos" SkillDock.app
-          ls -la "SkillDock-${APP_VERSION}-${ARCH}.app.tar.gz"
+        run: npx tauri build --bundles dmg --target ${{ matrix.target }}
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
@@ -59,5 +47,4 @@ jobs:
           name: skilldock-macos-${{ matrix.target }}
           path: |
             src-tauri/target/${{ matrix.target }}/release/bundle/**/*.dmg
-            src-tauri/SkillDock-${{ steps.version.outputs.version }}-*.app.tar.gz
           if-no-files-found: error

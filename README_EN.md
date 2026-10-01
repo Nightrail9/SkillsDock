@@ -91,18 +91,11 @@ Download the package for your platform from [GitHub Releases](https://github.com
 | Platform | Recommended file | Notes |
 | --- | --- | --- |
 | Windows 10 / 11 x64 | `SkillDock_*_x64-setup.exe` | Recommended for most users; installs WebView2 when needed |
-| Windows enterprise deployment | `SkillDock_*_x64_en-US.msi` | Suitable for Group Policy, Intune, and silent deployment |
 | Windows portable | `SkillDock-*-x64-green.zip` | Extract and run without installation |
 | macOS 12+ | `SkillDock_*_x64.dmg` or `SkillDock_*_aarch64.dmg` | Choose x64 for Intel or aarch64 for Apple Silicon |
-| Debian / Ubuntu | `SkillDock_*_amd64.deb` or `SkillDock_*_arm64.deb` | Choose the package matching your CPU architecture |
-| Fedora / RHEL / openSUSE | `SkillDock-*.x86_64.rpm` or `SkillDock-*.aarch64.rpm` | Choose the package matching your CPU architecture |
-| Other recent Linux distributions | `SkillDock_*_amd64.AppImage` or `SkillDock_*_aarch64.AppImage` | Portable single-file package |
 
 > [!NOTE]
 > Current macOS builds are unsigned. On first launch, right-click the app, select **Open**, and confirm that you want to run it.
-
-> [!NOTE]
-> Linux builds require WebKit2GTK 4.1, GTK3, and glibc 2.39 or newer. Ubuntu 24.04+, Debian 13+, Fedora 40+, or a comparable recent distribution is recommended.
 
 ## Quick start
 
@@ -168,11 +161,11 @@ cargo test
 # Build the packages configured for the current platform
 npm run tauri:build
 
-# Build Windows NSIS and MSI packages
-npm run tauri:build -- --bundles nsis,msi
+# Build the Windows NSIS installer
+npm run tauri:build -- --bundles nsis
 ```
 
-The Linux multi-architecture build scripts are in `src-tauri/docker/`. The macOS multi-architecture release workflow is in `.github/workflows/release-macos.yml`.
+The macOS multi-architecture release workflow is in `.github/workflows/release-macos.yml`.
 
 ## Tech stack
 

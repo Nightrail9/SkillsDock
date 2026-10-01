@@ -91,18 +91,11 @@ SkillDock 是面向 AI 开发者的跨平台 Skills 管理桌面客户端。它�
 | 系统 | 推荐文件 | 说明 |
 | --- | --- | --- |
 | Windows 10 / 11 x64 | `SkillDock_*_x64-setup.exe` | 普通用户推荐，缺少 WebView2 时安装程序会自动处理 |
-| Windows 企业部署 | `SkillDock_*_x64_en-US.msi` | 适合组策略、Intune 或静默批量安装 |
 | Windows 便携使用 | `SkillDock-*-x64-green.zip` | 解压即用，无需安装 |
 | macOS 12+ | `SkillDock_*_x64.dmg` 或 `SkillDock_*_aarch64.dmg` | Intel 选择 x64，Apple Silicon 选择 aarch64 |
-| Debian / Ubuntu | `SkillDock_*_amd64.deb` 或 `SkillDock_*_arm64.deb` | 按 CPU 架构选择 |
-| Fedora / RHEL / openSUSE | `SkillDock-*.x86_64.rpm` 或 `SkillDock-*.aarch64.rpm` | 按 CPU 架构选择 |
-| 其他较新的 Linux 发行版 | `SkillDock_*_amd64.AppImage` 或 `SkillDock_*_aarch64.AppImage` | 单文件运行 |
 
 > [!NOTE]
 > 当前 macOS 构建未签名。首次启动时，请右键应用并选择“打开”，再确认运行。
-
-> [!NOTE]
-> Linux 构建依赖 WebKit2GTK 4.1、GTK3 和 glibc 2.39 或更高版本，建议使用 Ubuntu 24.04+、Debian 13+、Fedora 40+ 或同代发行版。
 
 ## 快速开始
 
@@ -168,11 +161,11 @@ cargo test
 # 构建当前平台在 tauri.conf.json 中配置的安装包
 npm run tauri:build
 
-# Windows NSIS 与 MSI
-npm run tauri:build -- --bundles nsis,msi
+# 构建 Windows NSIS 安装程序
+npm run tauri:build -- --bundles nsis
 ```
 
-Linux 双架构构建脚本位于 `src-tauri/docker/`，macOS 双架构发布流程位于 `.github/workflows/release-macos.yml`。
+macOS 双架构发布流程位于 `.github/workflows/release-macos.yml`。
 
 ## 技术栈
 
