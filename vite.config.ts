@@ -8,6 +8,14 @@ export default defineConfig(() => {
     // Tauri 打包使用相对路径加载产物
     base: './',
     plugins: [react(), tailwindcss()],
+    build: {
+      rollupOptions: {
+        input: {
+          app: path.resolve(import.meta.dirname, 'index.html'),
+          site: path.resolve(import.meta.dirname, 'site.html'),
+        },
+      },
+    },
     resolve: {
       alias: {
         '@': path.resolve(import.meta.dirname, 'src'),
