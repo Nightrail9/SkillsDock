@@ -43,6 +43,7 @@ import { settingsApi } from '../lib/api';
 import { isTauriEnvironment } from '../lib/api/mockData';
 import { collapseHomePath } from '../lib/utils/pathDisplay';
 import { isWindowsPlatform } from '../lib/utils/platform';
+import { getAppUpdateCheckFeedback } from '../lib/utils/appUpdateFeedback';
 import { errorToString } from '../lib/errors/skillErrorParser';
 import { readLlmApiKey, writeLlmApiKey } from '../lib/llmKey';
 import { applyTheme } from '../hooks/useTheme';
@@ -51,7 +52,7 @@ import { ToolAdaptersView } from './ToolAdaptersView';
 import { ProjectsView } from './ProjectsView';
 
 /** 纯浏览器预览模式下的版本兜底值（Tauri 内一律以 getVersion() 为准） */
-const FALLBACK_APP_VERSION = '0.3.1';
+const FALLBACK_APP_VERSION = '0.4.2';
 
 export type SettingsSubTab = 'general' | 'tools' | 'projects' | 'model' | 'about';
 
@@ -102,6 +103,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     () => !isTauriEnvironment() ? false : null,
   );
   const [availableAppUpdate, setAvailableAppUpdate] = useState<Update | null>(null);
+  const [appUpdateFeedback, setAppUpdateFeedback] = useState<string | null>(null);
   const [isCheckingAppUpdate, setIsCheckingAppUpdate] = useState(false);
   const [isInstallingAppUpdate, setIsInstallingAppUpdate] = useState(false);
   const [llmForm, setLlmForm] = useState<{
@@ -283,10 +285,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
     setIsCheckingAppUpdate(true);
     setAvailableAppUpdate(null);
+    setAppUpdateFeedback(null);
     try {
       const update = await check();
+      const feedback = getAppUpdateCheckFeedback(update !== null, t);
+      setAppUpdateFeedback(feedback);
       if (!update) {
-        addToast('success', t('当前已是最新版本', 'You are up to date'));
         return;
       }
       setAvailableAppUpdate(update);
@@ -706,6 +710,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     {availableAppUpdate && (
                       <p className="text-[11px] text-indigo-700 mt-2">
                         {t(`当前版本 ${appVersion}，可更新至 ${availableAppUpdate.version}`, `Current ${appVersion}; version ${availableAppUpdate.version} is available`)}
+                      </p>
+                    )}
+                    {appUpdateFeedback && (
+                      <p role="status" className="text-[11px] text-emerald-700 mt-2">
+                        {appUpdateFeedback}
                       </p>
                     )}
                   </div>
