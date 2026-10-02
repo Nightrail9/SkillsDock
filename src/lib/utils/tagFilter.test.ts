@@ -2,10 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { matchesSelectedTags } from './tagFilter.ts';
 
-test('matches a skill when it includes any selected tag', () => {
+test('requires every selected tag to match a skill', () => {
   assert.equal(matchesSelectedTags(['frontend', 'react'], ['frontend', 'react']), true);
-  assert.equal(matchesSelectedTags(['frontend'], ['frontend', 'react']), true);
-  assert.equal(matchesSelectedTags(['react'], ['frontend', 'react']), true);
+  assert.equal(matchesSelectedTags(['frontend'], ['frontend', 'react']), false);
+  assert.equal(matchesSelectedTags(['react'], ['frontend', 'react']), false);
   assert.equal(matchesSelectedTags(['backend'], ['frontend', 'react']), false);
 });
 

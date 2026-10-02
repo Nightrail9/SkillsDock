@@ -241,6 +241,23 @@ impl Database {
             [],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS skill_project_assignments (
+                skill_id TEXT NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+                project_id INTEGER NOT NULL REFERENCES skill_projects(id) ON DELETE CASCADE,
+                PRIMARY KEY (skill_id, project_id)
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        conn.execute(
+            "INSERT OR IGNORE INTO skill_project_assignments (skill_id, project_id)
+             SELECT id, CAST(project_id AS INTEGER) FROM skills
+             WHERE scope = 'project' AND project_id IS NOT NULL
+               AND CAST(project_id AS INTEGER) IN (SELECT id FROM skill_projects)",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
 
         conn.execute(
             "CREATE TABLE IF NOT EXISTS skill_repos (
@@ -653,16 +670,44 @@ impl Database {
         Ok(affected > 0)
     }
 
-    pub fn count_skills_by_project_path(&self, path: &str) -> Result<i64, AppError> {
+    pub fn count_skills_by_project_id(&self, project_id: i64) -> Result<i64, AppError> {
         let conn = lock_conn!(self.conn);
-        let count = conn
-            .query_row(
-                "SELECT COUNT(*) FROM skills WHERE scope = 'project' AND project_path = ?1",
-                params![path],
-                |row| row.get(0),
+        conn.query_row(
+            "SELECT COUNT(*) FROM skill_project_assignments WHERE project_id = ?1",
+            params![project_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| AppError::Database(e.to_string()))
+    }
+
+    pub fn skill_ids_for_project(&self, project_id: i64) -> Result<Vec<String>, AppError> {
+        let conn = lock_conn!(self.conn);
+        let mut stmt = conn
+            .prepare(
+                "SELECT skill_id FROM skill_project_assignments
+                 WHERE project_id = ?1 ORDER BY skill_id",
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
-        Ok(count)
+        let rows = stmt
+            .query_map(params![project_id], |row| row.get(0))
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<String>, _>>()
+            .map_err(|e| AppError::Database(e.to_string()))
+    }
+
+    pub fn remove_skill_project_assignment(
+        &self,
+        skill_id: &str,
+        project_id: i64,
+    ) -> Result<bool, AppError> {
+        let conn = lock_conn!(self.conn);
+        let affected = conn
+            .execute(
+                "DELETE FROM skill_project_assignments WHERE skill_id = ?1 AND project_id = ?2",
+                params![skill_id, project_id],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(affected > 0)
     }
 }
 
@@ -671,6 +716,39 @@ mod hermes_path_tests {
     use super::Database;
     use crate::services::skill_service::SkillService;
     use std::fs;
+
+    #[test]
+    fn legacy_project_scope_is_backfilled_as_one_assignment() {
+        let db = Database::memory().expect("create in-memory database");
+        let project_id = db
+            .add_skill_project("legacy", "/legacy-project")
+            .expect("register legacy project");
+        {
+            let conn = db.conn.lock().expect("lock database connection");
+            conn.execute(
+                "INSERT INTO skills (id, name, directory, scope, project_id, project_path, source_type)
+                 VALUES (?1, ?2, ?3, 'project', ?4, ?5, 'local')",
+                rusqlite::params![
+                    "legacy-skill",
+                    "legacy-skill",
+                    "legacy-skill",
+                    project_id.to_string(),
+                    "/legacy-project"
+                ],
+            )
+            .expect("insert legacy project-scoped skill");
+        }
+
+        db.create_tables().expect("backfill legacy assignment");
+        db.create_tables().expect("repeat idempotent migration");
+
+        let skill = db
+            .get_skill("legacy-skill")
+            .expect("load migrated skill")
+            .expect("skill remains");
+        assert_eq!(skill.project_ids, vec![project_id.to_string()]);
+        assert_eq!(db.count_skills_by_project_id(project_id).unwrap(), 1);
+    }
 
     #[cfg(windows)]
     #[test]

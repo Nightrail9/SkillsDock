@@ -1,16 +1,16 @@
 import React from 'react';
-import { 
-  Activity,
+import {
   Bot,
-  FolderGit2, 
-  Globe, 
-  Tag as TagIcon, 
+  FolderGit2,
+  Globe,
+  Tag as TagIcon,
   LibraryBig,
-  Plus, 
+  Plus,
   RotateCcw,
+  Send,
 } from 'lucide-react';
 import { AppLocale, ScopeType, ToolAdapter, ToolId } from '../types';
-import { SkillEffectFilter, toggleSkillEffectFilter } from '../lib/utils/skillFilters';
+
 
 interface InstalledFilterSidebarProps {
   selectedScope: 'all' | ScopeType | string; // 'all' | 'global' | projectId
@@ -25,8 +25,8 @@ interface InstalledFilterSidebarProps {
   toolCounts: Record<ToolId, number>;
   selectedTools: ToolId[];
   onToggleTool: (toolId: ToolId) => void;
-  selectedEffectFilter: SkillEffectFilter;
-  onSelectEffectFilter: (filter: SkillEffectFilter) => void;
+  pendingSkillCount: number;
+  onOpenSkillScheduler: () => void;
   hasSearchQuery: boolean;
   onResetFilters: () => void;
   onOpenRegisterProject: () => void;
@@ -46,8 +46,8 @@ export const Sidebar: React.FC<InstalledFilterSidebarProps> = ({
   toolCounts,
   selectedTools,
   onToggleTool,
-  selectedEffectFilter,
-  onSelectEffectFilter,
+  pendingSkillCount,
+  onOpenSkillScheduler,
   hasSearchQuery,
   onResetFilters,
   onOpenRegisterProject,
@@ -58,7 +58,6 @@ export const Sidebar: React.FC<InstalledFilterSidebarProps> = ({
     selectedScope !== 'all' ||
     selectedTags.length > 0 ||
     selectedTools.length > 0 ||
-    selectedEffectFilter !== 'all' ||
     hasSearchQuery;
 
   return (
@@ -232,31 +231,22 @@ export const Sidebar: React.FC<InstalledFilterSidebarProps> = ({
           </div>
         </div>
 
-        {/* Section 4: Skill enablement status */}
+        {/* Section 4: Skills waiting for distribution */}
         <div className="space-y-1.5 pt-3 border-t border-slate-200/70">
-          <div className="flex items-center gap-1.5 px-2 pb-1 text-xs font-semibold tracking-wider text-slate-400 uppercase">
-            <Activity className="w-3.5 h-3.5" />
-            <span>{isEnglish ? 'Skill status' : '技能启用状态'}</span>
-          </div>
-          {([
-            ['active', isEnglish ? 'Enabled' : '已启用'],
-            ['inactive', isEnglish ? 'Not enabled' : '未启用'],
-          ] as const).map(([filter, label]) => {
-            const isSelected = selectedEffectFilter === filter;
-            return (
-              <button
-                key={filter}
-                type="button"
-                aria-pressed={isSelected}
-                onClick={() => onSelectEffectFilter(toggleSkillEffectFilter(selectedEffectFilter, filter))}
-                className={`w-full text-left px-3 py-1.5 rounded-lg text-xs transition-colors ${
-                  isSelected ? 'bg-indigo-50 text-indigo-700 font-semibold' : 'text-slate-600 hover:bg-slate-200/50'
-                }`}
-              >
-                {label}
-              </button>
-            );
-          })}
+          <button
+            type="button"
+            onClick={onOpenSkillScheduler}
+            className="w-full flex items-center justify-between px-3 py-2 rounded-xl text-left text-xs font-semibold text-slate-600 hover:bg-slate-200/60 hover:text-indigo-700 transition-colors"
+            title={isEnglish ? 'Schedule skills not distributed to any AI tool' : '调度尚未分发到任何 AI 工具的技能'}
+          >
+            <span className="flex items-center gap-1.5">
+              <Send className="w-3.5 h-3.5" />
+              <span>{isEnglish ? 'Undistributed skills' : '待调度技能'}</span>
+            </span>
+            <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-200/70 text-slate-500 font-mono">
+              {pendingSkillCount}
+            </span>
+          </button>
         </div>
       </div>
     </aside>

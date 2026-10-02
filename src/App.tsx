@@ -24,6 +24,7 @@ import { HeaderBar } from './components/HeaderBar';
 import { Sidebar } from './components/Sidebar';
 import { SkillCard } from './components/SkillCard';
 import { InstallModal } from './components/InstallModal';
+import { SkillSchedulerModal, type SkillScheduleSummary } from './components/SkillSchedulerModal';
 import type { SettingsSubTab } from './components/SettingsView';
 import { ShareModal } from './components/ShareModal';
 import { useTheme } from './hooks/useTheme';
@@ -44,6 +45,7 @@ import {
   useBulkUpdateSkills,
   useInstallSkillUnified,
 } from './hooks/useSkills';
+import { useScheduleSkills } from './hooks/useProjects';
 import { useUpdateSettings, useRedeployProjectLinks } from './hooks/useSettings';
 import { skillsApi } from './lib/api';
 import { useQueryClient } from '@tanstack/react-query';
@@ -52,10 +54,10 @@ import { settingsApi } from './lib/api';
 import { readLlmApiKey } from './lib/llmKey';
 import { matchesSelectedTags } from './lib/utils/tagFilter';
 import {
-  matchesSelectedToolAndEffectFilter,
+  matchesSelectedTools,
   matchesSelectedScope,
-  SkillEffectFilter,
 } from './lib/utils/skillFilters';
+import { hasNoToolDeployments } from './lib/utils/skillScheduling';
 
 const DiscoveryView = lazy(() =>
   import('./components/DiscoveryView').then(({ DiscoveryView }) => ({ default: DiscoveryView })),
@@ -88,6 +90,7 @@ export default function App() {
   const updateSkillMutation = useUpdateSkill();
   const bulkUpdateMutation = useBulkUpdateSkills();
   const installUnifiedMutation = useInstallSkillUnified();
+  const scheduleSkillsMutation = useScheduleSkills();
   const updateSettingsMutation = useUpdateSettings();
   const redeployLinksMutation = useRedeployProjectLinks();
 
@@ -212,7 +215,6 @@ export default function App() {
   const [selectedScope, setSelectedScope] = useState<'all' | ScopeType | string>('all');
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [selectedTools, setSelectedTools] = useState<ToolId[]>([]);
-  const [selectedEffectFilter, setSelectedEffectFilter] = useState<SkillEffectFilter>('all');
 
   useEffect(() => {
     const enabledToolIds = new Set(tools.filter((tool) => tool.isEnabled).map((tool) => tool.id));
@@ -243,6 +245,11 @@ export default function App() {
 
   // 更新中的技能集合（按钮 loading 态）
   const [updatingSkillIds, setUpdatingSkillIds] = useState<Set<string>>(new Set());
+  const undistributedSkills = useMemo(
+    () => skills.filter((skill) => hasNoToolDeployments(skill.deployedTools)),
+    [skills],
+  );
+  const [isSkillSchedulerOpen, setIsSkillSchedulerOpen] = useState(false);
 
   const tagEditingSkill = tagEditingSkillId
     ? skills.find((s) => s.id === tagEditingSkillId) ?? null
@@ -305,7 +312,14 @@ export default function App() {
   }, [skills]);
 
   const globalSkillCount = useMemo(
-    () => skills.filter((skill) => skill.scope === 'global').length,
+    () => skills.filter((skill) =>
+      matchesSelectedScope(
+        skill.scope,
+        skill.projectIds,
+        'global',
+        !hasNoToolDeployments(skill.deployedTools),
+      ),
+    ).length,
     [skills],
   );
 
@@ -319,21 +333,17 @@ export default function App() {
     [skills, tools],
   );
 
-  // Apply different filter groups together, while selections within a group match any option.
+  // Scope, tags, tools, and search intersect; every selected tag must match, while tools remain any-match.
   const filteredSkills = useMemo(() => {
     return skills.filter((skill) => {
-      if (!matchesSelectedScope(skill.scope, skill.projectId, selectedScope)) return false;
-
-      if (!matchesSelectedTags(skill.tags, selectedTags)) {
-        return false;
-      }
-
-      if (!matchesSelectedToolAndEffectFilter(
-        skill.deployedTools,
-        tools,
-        selectedTools,
-        selectedEffectFilter,
+      if (!matchesSelectedScope(
+        skill.scope,
+        skill.projectIds,
+        selectedScope,
+        !hasNoToolDeployments(skill.deployedTools),
       )) return false;
+      if (!matchesSelectedTags(skill.tags, selectedTags)) return false;
+      if (!matchesSelectedTools(skill.deployedTools, selectedTools)) return false;
 
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase();
@@ -346,7 +356,8 @@ export default function App() {
 
       return true;
     });
-  }, [skills, tools, selectedScope, selectedTags, selectedTools, selectedEffectFilter, searchQuery]);
+  }, [skills, selectedScope, selectedTags, selectedTools, searchQuery]);
+
 
   // 当前筛选下可见的选中项：选中态可跨筛选/标签页保留，但批量动作严格作用于可见交集
   const visibleSelectedSkills = useMemo(
@@ -355,6 +366,32 @@ export default function App() {
   );
 
   const updateAvailableCount = skills.filter((s) => s.hasUpdate).length;
+
+  const handleScheduleSkills = useCallback(async ({
+    skillIds,
+    projectIds,
+    toolIds,
+  }: {
+    skillIds: string[];
+    projectIds: string[];
+    toolIds: ToolId[];
+  }): Promise<SkillScheduleSummary> => {
+    const result = await scheduleSkillsMutation.mutateAsync({ skillIds, projectIds, toolIds });
+    if (result.failed.length === 0) {
+      addToast(
+        'success',
+        t('技能调度完成', 'Skill scheduling complete'),
+        t(`已将 ${result.succeeded.length} 个技能分发到所选项目和工具。`, `Distributed ${result.succeeded.length} skills to the selected projects and tools.`),
+      );
+    } else {
+      addToast(
+        'warning',
+        t('技能调度部分完成', 'Skill scheduling partially complete'),
+        t(`成功 ${result.succeeded.length} 项，失败 ${result.failed.length} 项。失败项可在弹窗中查看。`, `${result.succeeded.length} succeeded; ${result.failed.length} failed. See the dialog for failed items.`),
+      );
+    }
+    return result;
+  }, [scheduleSkillsMutation.mutateAsync, addToast, appSettings?.locale]);
 
   // ===== Handlers =====
 
@@ -688,7 +725,6 @@ export default function App() {
     setSelectedScope('all');
     setSelectedTags([]);
     setSelectedTools([]);
-    setSelectedEffectFilter('all');
     setSearchQuery('');
   };
 
@@ -848,8 +884,8 @@ export default function App() {
             toolCounts={toolSkillCounts}
             selectedTools={selectedTools}
             onToggleTool={handleToggleToolFilter}
-            selectedEffectFilter={selectedEffectFilter}
-            onSelectEffectFilter={setSelectedEffectFilter}
+            pendingSkillCount={undistributedSkills.length}
+            onOpenSkillScheduler={() => setIsSkillSchedulerOpen(true)}
             hasSearchQuery={Boolean(searchQuery.trim())}
             onResetFilters={handleResetInstalledFilters}
             onOpenRegisterProject={() => {
@@ -1073,6 +1109,18 @@ export default function App() {
           selectedSkills={shareTarget.isBatch ? visibleSelectedSkills : []}
           onClose={() => setShareTarget(null)}
           addToast={addToast}
+        />
+      )}
+
+      {isSkillSchedulerOpen && (
+        <SkillSchedulerModal
+          skills={undistributedSkills}
+          projects={projects}
+          tools={tools}
+          locale={appSettings?.locale ?? 'zh'}
+          isScheduling={scheduleSkillsMutation.isPending}
+          onClose={() => setIsSkillSchedulerOpen(false)}
+          onSchedule={handleScheduleSkills}
         />
       )}
 

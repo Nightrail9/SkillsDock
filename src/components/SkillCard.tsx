@@ -121,7 +121,11 @@ const SkillCardComponent: React.FC<SkillCardProps> = ({
               ) : (
                 <span className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 border border-blue-200/70">
                   <FolderGit2 className="w-2.5 h-2.5" />
-                  {skill.projectName || skill.projectId}
+                  {skill.projectNames.length === 1
+                    ? skill.projectNames[0]
+                    : locale === 'en'
+                      ? `${skill.projectNames.length} projects`
+                      : `${skill.projectNames.length} 个项目`}
                 </span>
               )}
 

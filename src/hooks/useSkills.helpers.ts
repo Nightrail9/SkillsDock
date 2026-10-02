@@ -35,10 +35,8 @@ export function mergeImportedSkills(
 }
 
 /**
- * 按作用域拆分已安装技能：全局技能 + 按项目分组的项目级技能。
- *
- * scope 缺省视为 "global"。byProject 的 key 为 projectId，
- * 项目级技能缺少 projectId 时归入空字符串分组，避免静默丢失。
+ * Splits globally available skills from project-scoped skills grouped by every assigned project.
+ * Project-scoped records without assignments remain visible in the empty-string group.
  */
 export function splitSkillsByScope(skills: Skill[]): {
   global: Skill[];
@@ -46,21 +44,18 @@ export function splitSkillsByScope(skills: Skill[]): {
 } {
   const global: Skill[] = [];
   const byProject = new Map<string, Skill[]>();
-
   for (const skill of skills) {
-    if ((skill.scope ?? 'global') === 'project') {
-      const key = skill.projectId ?? '';
-      const list = byProject.get(key);
-      if (list) {
-        list.push(skill);
-      } else {
-        byProject.set(key, [skill]);
-      }
-    } else {
+    if ((skill.scope ?? 'global') !== 'project') {
       global.push(skill);
+      continue;
+    }
+    const projectIds = skill.projectIds.length > 0 ? skill.projectIds : [''];
+    for (const projectId of projectIds) {
+      const projectSkills = byProject.get(projectId);
+      if (projectSkills) projectSkills.push(skill);
+      else byProject.set(projectId, [skill]);
     }
   }
-
   return { global, byProject };
 }
 

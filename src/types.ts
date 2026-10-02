@@ -55,8 +55,8 @@ export interface Skill {
   descriptionStatus: 'pending' | 'ready' | 'failed';
   tags: string[];
   scope: ScopeType;
-  projectId?: string; // if scope === 'project'
-  projectName?: string;
+  projectIds: string[];
+  projectNames: string[];
   source: SkillSource;
   currentCommit: string; // short SHA, e.g. "7f3b19a"
   latestCommit?: string; // if update available, e.g. "9a2c4e1"
@@ -204,7 +204,6 @@ export interface RepoSkillProbe {
   skills: ProbedRepoSkill[];
 }
 
-/** 统一安装请求（install_skill_unified 的公共部分） */
 export interface InstallRequest {
   scope: ScopeType;
   projectId?: string;

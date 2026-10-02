@@ -1,8 +1,8 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { projectsApi } from '../lib/api';
 import { APP_STATE_KEY } from './useAppState';
-import type { AppState, ImportSkillSelection } from '../types';
-
+import { runSequentialBulkAction } from '../lib/utils/sequentialBulkAction';
+import type { AppState, ImportSkillSelection, ToolId } from '../types';
 export function useAddSkillProject() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -25,6 +25,32 @@ export function useImportProjectSkills() {
     onSettled: () => queryClient.invalidateQueries({ queryKey: APP_STATE_KEY }),
   });
 }
+
+export function useAssignSkillProjects() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ skillId, projectIds }: { skillId: string; projectIds: string[] }) =>
+      projectsApi.assignSkills(skillId, projectIds),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: APP_STATE_KEY }),
+  });
+}
+
+/** 串行调度多项技能，单项失败不阻断后续技能。 */
+export function useScheduleSkills() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ skillIds, projectIds, toolIds }: {
+      skillIds: string[];
+      projectIds: string[];
+      toolIds: ToolId[];
+    }) =>
+      runSequentialBulkAction(skillIds, (skillId) =>
+        projectsApi.scheduleSkill(skillId, projectIds, toolIds),
+      ),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: APP_STATE_KEY }),
+  });
+}
+
 
 export function useRemoveSkillProject() {
   const queryClient = useQueryClient();

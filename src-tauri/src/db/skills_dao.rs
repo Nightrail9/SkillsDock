@@ -71,6 +71,7 @@ fn row_to_skill(row: &rusqlite::Row) -> rusqlite::Result<SkillRecord> {
         scope: row.get(8)?,
         project_id: row.get(9)?,
         project_path: row.get(10)?,
+        project_ids: Vec::new(),
         source_type: row.get(11)?,
         source_repo: row.get(12)?,
         source_branch: row.get(13)?,
@@ -91,6 +92,26 @@ fn row_to_skill(row: &rusqlite::Row) -> rusqlite::Result<SkillRecord> {
         license: row.get(28)?,
     })
 }
+fn load_project_assignments(
+    conn: &rusqlite::Connection,
+    skills: &mut IndexMap<String, SkillRecord>,
+) -> Result<(), AppError> {
+    let mut stmt = conn
+        .prepare("SELECT skill_id, project_id FROM skill_project_assignments ORDER BY project_id")
+        .map_err(|e| AppError::Database(e.to_string()))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })
+        .map_err(|e| AppError::Database(e.to_string()))?;
+    for row in rows {
+        let (skill_id, project_id) = row.map_err(|e| AppError::Database(e.to_string()))?;
+        if let Some(skill) = skills.get_mut(&skill_id) {
+            skill.project_ids.push(project_id.to_string());
+        }
+    }
+    Ok(())
+}
 
 impl Database {
     /// 获取所有技能（按显示名排序）
@@ -101,16 +122,16 @@ impl Database {
                 "SELECT {SKILL_COLUMNS} FROM skills ORDER BY display_name ASC, name ASC"
             ))
             .map_err(|e| AppError::Database(e.to_string()))?;
-
         let rows = stmt
             .query_map([], row_to_skill)
             .map_err(|e| AppError::Database(e.to_string()))?;
-
         let mut skills = IndexMap::new();
         for row in rows {
             let skill = row.map_err(|e| AppError::Database(e.to_string()))?;
             skills.insert(skill.id.clone(), skill);
         }
+        drop(stmt);
+        load_project_assignments(&conn, &mut skills)?;
         Ok(skills)
     }
 
@@ -122,16 +143,36 @@ impl Database {
             row_to_skill,
         );
         match result {
-            Ok(skill) => Ok(Some(skill)),
+            Ok(mut skill) => {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT project_id FROM skill_project_assignments
+                         WHERE skill_id = ?1 ORDER BY project_id",
+                    )
+                    .map_err(|e| AppError::Database(e.to_string()))?;
+                let rows = stmt
+                    .query_map(params![id], |row| row.get::<_, i64>(0))
+                    .map_err(|e| AppError::Database(e.to_string()))?;
+                for row in rows {
+                    skill.project_ids.push(
+                        row.map_err(|e| AppError::Database(e.to_string()))?
+                            .to_string(),
+                    );
+                }
+                Ok(Some(skill))
+            }
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(AppError::Database(e.to_string())),
         }
     }
 
-    /// 保存技能（INSERT OR REPLACE，用于安装路径）
+    /// Save a skill and its project assignments atomically.
     pub fn save_skill(&self, skill: &SkillRecord) -> Result<(), AppError> {
         let conn = lock_conn!(self.conn);
-        conn.execute(
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        tx.execute(
             "INSERT OR REPLACE INTO skills (
                 id, name, display_name, description, display_description, description_status, directory, tags, scope,
                 project_id, project_path, source_type, source_repo, source_branch, source_subpath,
@@ -173,7 +214,113 @@ impl Database {
             ],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
+        tx.execute(
+            "DELETE FROM skill_project_assignments WHERE skill_id = ?1",
+            params![skill.id],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        if skill.scope == crate::types::SKILL_SCOPE_PROJECT {
+            for project_id in &skill.project_ids {
+                let project_id = project_id.parse::<i64>().map_err(|_| {
+                    AppError::Database(format!(
+                        "Invalid project id for skill {}: {project_id}",
+                        skill.id
+                    ))
+                })?;
+                tx.execute(
+                    "INSERT INTO skill_project_assignments (skill_id, project_id) VALUES (?1, ?2)",
+                    params![skill.id, project_id],
+                )
+                .map_err(|e| AppError::Database(e.to_string()))?;
+            }
+        }
+        tx.commit().map_err(|e| AppError::Database(e.to_string()))?;
         Ok(())
+    }
+
+    pub fn set_skill_projects(
+        &self,
+        id: &str,
+        project_ids: &[String],
+        scope: &str,
+        primary_project: Option<(&str, &str)>,
+    ) -> Result<bool, AppError> {
+        self.with_write_tx(|tx| {
+            let changed = tx
+                .execute(
+                    "UPDATE skills SET scope = ?1, project_id = ?2, project_path = ?3 WHERE id = ?4",
+                    params![
+                        scope,
+                        primary_project.map(|(id, _)| id),
+                        primary_project.map(|(_, path)| path),
+                        id
+                    ],
+                )
+                .map_err(|e| AppError::Database(e.to_string()))?;
+            tx.execute(
+                "DELETE FROM skill_project_assignments WHERE skill_id = ?1",
+                params![id],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+            if scope == crate::types::SKILL_SCOPE_PROJECT {
+                for project_id in project_ids {
+                    let parsed = project_id.parse::<i64>().map_err(|_| {
+                        AppError::Database(format!("Invalid project id: {project_id}"))
+                    })?;
+                    tx.execute(
+                        "INSERT INTO skill_project_assignments (skill_id, project_id) VALUES (?1, ?2)",
+                        params![id, parsed],
+                    )
+                    .map_err(|e| AppError::Database(e.to_string()))?;
+                }
+            }
+            Ok(changed > 0)
+        })
+    }
+    /// Atomically replaces a skill's scope, project assignments, primary project, and tools.
+    pub fn set_skill_deployment(
+        &self,
+        id: &str,
+        project_ids: &[String],
+        primary_project: Option<(&str, &str)>,
+        tools: &[String],
+    ) -> Result<bool, AppError> {
+        let assignments = project_ids
+            .iter()
+            .map(|project_id| {
+                project_id
+                    .parse::<i64>()
+                    .map_err(|_| AppError::Database(format!("Invalid project id: {project_id}")))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let tools_json = to_json_string(&tools)?;
+        self.with_write_tx(|tx| {
+            let changed = tx
+                .execute(
+                    "UPDATE skills SET scope = 'project', project_id = ?1, project_path = ?2,
+                        enabled_tools = ?3 WHERE id = ?4",
+                    params![
+                        primary_project.map(|(id, _)| id),
+                        primary_project.map(|(_, path)| path),
+                        tools_json,
+                        id
+                    ],
+                )
+                .map_err(|e| AppError::Database(e.to_string()))?;
+            tx.execute(
+                "DELETE FROM skill_project_assignments WHERE skill_id = ?1",
+                params![id],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+            for project_id in &assignments {
+                tx.execute(
+                    "INSERT INTO skill_project_assignments (skill_id, project_id) VALUES (?1, ?2)",
+                    params![id, project_id],
+                )
+                .map_err(|e| AppError::Database(e.to_string()))?;
+            }
+            Ok(changed > 0)
+        })
     }
 
     /// 仅更新已有记录的元数据（更新流程使用；不插入缺失行，不动 enabled_tools）
@@ -339,6 +486,7 @@ mod tests {
             scope: SKILL_SCOPE_GLOBAL.to_string(),
             project_id: None,
             project_path: None,
+            project_ids: vec![],
             source_type: "github".to_string(),
             source_repo: Some("owner/repo".to_string()),
             source_branch: Some("main".to_string()),
@@ -400,6 +548,62 @@ mod tests {
         assert!(!db
             .update_skill_enabled_tools("ghost", &[])
             .expect("missing id"));
+    }
+
+    #[test]
+    fn project_scope_persists_multiple_project_assignments_without_duplicates() {
+        let db = Database::memory().expect("memory db");
+        let first = db
+            .add_skill_project("first", "/first")
+            .expect("first project");
+        let second = db
+            .add_skill_project("second", "/second")
+            .expect("second project");
+        let mut record = skill("owner/repo:shared", "shared");
+        record.scope = crate::types::SKILL_SCOPE_PROJECT.to_string();
+        record.project_id = Some(first.to_string());
+        record.project_path = Some("/first".to_string());
+        record.project_ids = vec![first.to_string(), second.to_string()];
+        db.save_skill(&record).expect("save project skill");
+
+        let loaded = db
+            .get_skill("owner/repo:shared")
+            .expect("load project skill")
+            .expect("skill exists");
+        assert_eq!(
+            loaded.project_ids,
+            vec![first.to_string(), second.to_string()]
+        );
+        assert_eq!(
+            db.skill_ids_for_project(first).unwrap(),
+            vec!["owner/repo:shared"]
+        );
+        assert_eq!(
+            db.skill_ids_for_project(second).unwrap(),
+            vec!["owner/repo:shared"]
+        );
+        assert_eq!(db.count_skills_by_project_id(first).unwrap(), 1);
+        assert_eq!(db.count_skills_by_project_id(second).unwrap(), 1);
+
+        let second_id = second.to_string();
+        db.set_skill_projects(
+            "owner/repo:shared",
+            &[second_id.clone()],
+            crate::types::SKILL_SCOPE_PROJECT,
+            Some((&second_id, "/second")),
+        )
+        .expect("remove first assignment");
+        assert_eq!(
+            db.get_skill("owner/repo:shared")
+                .unwrap()
+                .unwrap()
+                .project_ids,
+            vec![second_id]
+        );
+        assert_eq!(
+            db.skill_ids_for_project(first).unwrap(),
+            Vec::<String>::new()
+        );
     }
 
     #[test]

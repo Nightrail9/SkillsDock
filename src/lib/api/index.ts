@@ -177,6 +177,19 @@ export const projectsApi = {
   importSkills(projectId: string, selections: ImportSkillSelection[]): Promise<Skill[]> {
     return invokeCommand('import_project_skills', { projectId, selections });
   },
+  assignSkills(skillId: string, projectIds: string[]): Promise<void> {
+    return invokeCommand('assign_skill_to_projects', { skillId, projectIds });
+  },
+
+  /** Atomically assigns one skill to projects and distributes it to the selected tools. */
+  scheduleSkill(
+    skillId: string,
+    projectIds: string[],
+    toolIds: ToolId[],
+  ): Promise<void> {
+    return invokeCommand('schedule_skill_to_projects', { skillId, projectIds, toolIds });
+  },
+
 
   removeProject(id: string, cleanup: boolean): Promise<void> {
     return invokeCommand('remove_skill_project', { id, cleanup });

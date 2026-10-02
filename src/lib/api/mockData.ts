@@ -1,4 +1,4 @@
-import type { AppState, ToolAdapter, Skill } from '../../types';
+import type { AppState, ProjectScope, ToolAdapter, Skill } from '../../types';
 
 export const isTauriEnvironment = (): boolean => {
   return typeof window !== 'undefined' && ('__TAURI_INTERNALS__' in window || '__TAURI__' in window);
@@ -95,6 +95,8 @@ const initialSkills: Skill[] = [
     descriptionStatus: 'ready',
     tags: ['科研', '论文审阅', '审稿'],
     scope: 'global',
+    projectIds: [],
+    projectNames: [],
     source: { type: 'local' },
     currentCommit: 'a1b2c3d',
     hasUpdate: false,
@@ -117,6 +119,8 @@ const initialSkills: Skill[] = [
     descriptionStatus: 'ready',
     tags: ['研究', '深度调研', '自动化'],
     scope: 'global',
+    projectIds: [],
+    projectNames: [],
     source: { type: 'github', repo: 'skills/deep-research' },
     currentCommit: 'f4e3d2c',
     hasUpdate: false,
@@ -130,12 +134,45 @@ const initialSkills: Skill[] = [
     deployMethod: 'symlink',
     storagePath: '~/.skillsdock/deep-research',
   },
+  {
+    id: 'skill-api-contract-checker',
+    name: 'api-contract-checker',
+    displayName: 'API Contract Checker',
+    directory: 'api-contract-checker',
+    description: 'Validate API changes against an existing contract.',
+    descriptionStatus: 'ready',
+    tags: ['development', 'api'],
+    scope: 'global',
+    projectIds: [],
+    projectNames: [],
+    source: { type: 'local' },
+    currentCommit: 'c8d7e6f',
+    hasUpdate: false,
+    installedAt: '2026-09-15T09:00:00Z',
+    lastUpdated: '2026-09-15T09:00:00Z',
+    author: 'Local',
+    license: '',
+    documentation: '# API Contract Checker',
+    files: [{ name: 'SKILL.md', path: 'SKILL.md', size: '1 KB', type: 'file' }],
+    deployedTools: {},
+    deployMethod: 'symlink',
+    storagePath: '~/.skillsdock/api-contract-checker',
+  },
 ];
 
 let mockState: AppState = {
   skills: initialSkills,
   tools: initialTools,
-  projects: [],
+  projects: [
+    {
+      id: 'mock-project-sample',
+      name: 'Sample Project',
+      path: '/mock/sample-project',
+      skillCount: 0,
+      registeredAt: '2026-09-15T09:00:00Z',
+      isPathValid: true,
+    },
+  ],
   settings: {
     distributionMethod: 'symlink',
     libraryPath: '~/.skillsdock',
@@ -166,10 +203,48 @@ let mockState: AppState = {
   homeDir: '~',
 };
 
+function refreshMockProjectSkillCounts(): void {
+  for (const project of mockState.projects) {
+    project.skillCount = mockState.skills.filter((skill) =>
+      skill.scope === 'project' && skill.projectIds.includes(project.id),
+    ).length;
+  }
+}
+
+
 export async function handleMockInvoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   switch (command) {
     case 'get_app_state':
       return JSON.parse(JSON.stringify(mockState)) as T;
+    case 'add_skill_project': {
+      const path = args?.path as string;
+      const project: ProjectScope = {
+        id: `mock-project-${mockState.projects.length + 1}`,
+        name: path.split(/[\\/]/).filter(Boolean).at(-1) ?? path,
+        path,
+        skillCount: 0,
+        registeredAt: new Date().toISOString(),
+        isPathValid: true,
+      };
+      mockState.projects.push(project);
+      return project as T;
+    }
+    case 'remove_skill_project': {
+      const projectId = args?.id as string;
+      mockState.skills = mockState.skills.flatMap((skill) => {
+        if (!skill.projectIds.includes(projectId)) return [skill];
+        skill.projectIds = skill.projectIds.filter((id) => id !== projectId);
+        skill.projectNames = mockState.projects
+          .filter((project) => skill.projectIds.includes(project.id))
+          .map((project) => project.name);
+        return skill.projectIds.length > 0 ? [skill] : [];
+      });
+      refreshMockProjectSkillCounts();
+      return undefined as T;
+    }
+    case 'check_project_paths':
+      return mockState.projects.map(({ id, path }) => ({ id, path, isPathValid: true })) as T;
+
 
     case 'complete_onboarding':
       mockState.onboardingCompleted = true;
@@ -197,13 +272,65 @@ export async function handleMockInvoke<T>(command: string, args?: Record<string,
       return true as T;
     }
 
+    case 'update_settings':
     case 'save_settings': {
       const newSettings = args?.settings as AppState['settings'];
       if (newSettings) {
         mockState.settings = { ...mockState.settings, ...newSettings };
       }
-      return true as T;
+      return (command === 'update_settings' ? [] : true) as T;
     }
+    case 'assign_skill_to_projects': {
+      const skillId = args?.skillId as string;
+      const projectIds = args?.projectIds as string[];
+      const skill = mockState.skills.find((item) => item.id === skillId);
+      if (skill) {
+        skill.scope = 'project';
+        skill.projectIds = [...new Set([...skill.projectIds, ...projectIds])];
+        skill.projectNames = skill.projectIds
+          .map((id) => mockState.projects.find((project) => project.id === id)?.name)
+          .filter((name): name is string => Boolean(name));
+      }
+      refreshMockProjectSkillCounts();
+      return undefined as T;
+    }
+    case 'schedule_skill_to_projects': {
+      const skillId = args?.skillId as string;
+      const projectIds = args?.projectIds as string[];
+      const toolIds = args?.toolIds as string[];
+      const skill = mockState.skills.find((item) => item.id === skillId);
+      if (!skill) {
+        throw new Error(`Skill not found: ${skillId}`);
+      }
+      if (projectIds.length === 0 || toolIds.length === 0) {
+        throw new Error('Select at least one project and one AI tool.');
+      }
+      for (const projectId of new Set(projectIds)) {
+        const project = mockState.projects.find((item) => item.id === projectId);
+        if (!project || !project.isPathValid) {
+          throw new Error(`Project is unavailable: ${projectId}`);
+        }
+      }
+      for (const toolId of new Set(toolIds)) {
+        const tool = mockState.tools.find((item) => item.id === toolId);
+        if (!tool || !tool.isEnabled) {
+          throw new Error(`Tool is unavailable: ${toolId}`);
+        }
+      }
+      skill.scope = 'project';
+      skill.projectIds = [...new Set([...skill.projectIds, ...projectIds])];
+      skill.projectNames = skill.projectIds
+        .map((id) => mockState.projects.find((project) => project.id === id)?.name)
+        .filter((name): name is string => Boolean(name));
+      skill.deployedTools = {
+        ...skill.deployedTools,
+        ...Object.fromEntries(toolIds.map((toolId) => [toolId, true])),
+      };
+      refreshMockProjectSkillCounts();
+      return undefined as T;
+    }
+
+
 
     case 'check_updates':
     case 'check_all_updates':

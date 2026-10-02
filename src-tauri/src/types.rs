@@ -71,10 +71,8 @@ pub struct Skill {
     pub tags: Vec<String>,
     /// 'global' | 'project'
     pub scope: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub project_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub project_name: Option<String>,
+    pub project_ids: Vec<String>,
+    pub project_names: Vec<String>,
     pub source: SkillSource,
     /// 短 SHA，无远端来源时为本地占位符
     pub current_commit: String,
@@ -277,8 +275,10 @@ pub struct SkillRecord {
     pub directory: String,
     pub tags: Vec<String>,
     pub scope: String,
+    /// Primary project for legacy storage-path resolution; canonical assignments live in join table.
     pub project_id: Option<String>,
     pub project_path: Option<String>,
+    pub project_ids: Vec<String>,
     pub source_type: String,
     pub source_repo: Option<String>,
     pub source_branch: Option<String>,

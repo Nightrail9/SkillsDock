@@ -1,6 +1,6 @@
 [package]
 name = "skilldock"
-version = "0.4.2"
+version = "0.5.0"
 description = "SkillDock - AI skill management desktop application"
 authors = ["SkillDock"]
 license = "Apache-2.0"

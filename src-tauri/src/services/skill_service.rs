@@ -1268,30 +1268,33 @@ impl SkillService {
             .join(directory)
     }
 
-    /// 技能的规范存储目录（全局：中央库；项目：`<library>/projects/<项目键>/<dir>`）。
-    /// 项目级带旧版兜底：新位置不存在且旧位置存在时返回旧位置，
-    /// 保证存量未迁移完成的安装仍可读、可更新、可卸载
+    /// The skill payload has one central-library copy; project scope only changes its deployments.
     pub fn skill_storage_dir(db: &Database, record: &SkillRecord) -> Result<PathBuf> {
         let directory = Self::require_valid_directory(&record.directory)?;
+        let library = Self::get_library_dir(db)?;
         if record.is_project() {
             let project_path = record
                 .project_path
                 .as_deref()
                 .ok_or_else(|| anyhow!("项目级 Skill {} 缺少 project_path", record.id))?;
-            let new_dir = Self::get_library_dir(db)?
+            let project_dir = library
                 .join("projects")
                 .join(Self::project_storage_namespace(project_path))
                 .join(&directory);
-            if new_dir.exists() {
-                return Ok(new_dir);
+            if project_dir.exists() {
+                return Ok(project_dir);
             }
             let legacy = Self::legacy_project_storage_dir(project_path, &directory);
             if legacy.exists() {
                 return Ok(legacy);
             }
-            Ok(new_dir)
+            let central_dir = library.join(&directory);
+            if central_dir.exists() {
+                return Ok(central_dir);
+            }
+            Ok(project_dir)
         } else {
-            Ok(Self::get_library_dir(db)?.join(directory))
+            Ok(library.join(directory))
         }
     }
 
@@ -1812,10 +1815,33 @@ impl SkillService {
         Ok(())
     }
 
-    /// 从工具的全局技能目录移除技能
+    /// Removes a skill from its global directory or every assigned project directory.
     pub fn remove_from_tool(db: &Database, record: &SkillRecord, tool: &ToolAdapter) -> Result<()> {
-        let root = Self::tool_root(tool)?;
-        Self::remove_from_tool_at(db, record, tool, &root)
+        if !record.is_project() {
+            return Self::remove_from_tool_at(db, record, tool, &Self::tool_root(tool)?);
+        }
+        let paths = Self::assigned_project_paths(db, record)?;
+        for path in paths {
+            if let Some(root) = Self::project_tool_root(tool, &path) {
+                Self::remove_from_tool_at(db, record, tool, &root)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn assigned_project_paths(db: &Database, record: &SkillRecord) -> Result<Vec<String>> {
+        let projects = db.list_skill_projects()?;
+        let paths = record
+            .project_ids
+            .iter()
+            .filter_map(|id| id.parse::<i64>().ok())
+            .filter_map(|id| projects.iter().find(|project| project.0 == id))
+            .map(|project| project.2.clone())
+            .collect::<Vec<_>>();
+        if paths.is_empty() {
+            return Ok(record.project_path.iter().cloned().collect());
+        }
+        Ok(paths)
     }
 
     /// 统一安装入口（GitHub 仓库 / skills.sh 注册表坐标）
@@ -2030,6 +2056,7 @@ impl SkillService {
             scope: SKILL_SCOPE_GLOBAL.to_string(),
             project_id: None,
             project_path: None,
+            project_ids: vec![],
             source_type,
             source_repo: Some(format!("{owner}/{repo_name}")),
             source_branch: Some(used_branch.clone()),
@@ -2130,38 +2157,35 @@ impl SkillService {
         Ok(None)
     }
 
-    /// 部署到一组工具，返回部署成功的工具 id（单个失败仅记日志）
+    /// Deploys a skill to each selected tool and, for project scope, every assigned project.
     fn deploy_to_tools(db: &Database, record: &SkillRecord, tool_ids: &[String]) -> Vec<String> {
+        let project_paths = if record.is_project() {
+            Self::assigned_project_paths(db, record).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let mut deployed = Vec::new();
         for tool_id in tool_ids {
             let tool = match db.get_tool_adapter(tool_id) {
                 Ok(Some(tool)) => tool,
                 _ => continue,
             };
-            // 项目级技能分发到项目内目录；全局技能分发到工具全局目录
             let result = if record.is_project() {
-                match record
-                    .project_path
-                    .as_deref()
-                    .and_then(|p| Self::project_tool_root(&tool, p))
-                {
-                    Some(dest_root) => Self::deploy_to_tool_at(db, record, &tool, &dest_root),
-                    None => {
-                        log::warn!(
-                            "工具 {} 未配置项目内技能目录，跳过部署（可在「AI 工具」页配置）",
-                            tool.id
-                        );
-                        continue;
-                    }
+                if project_paths.is_empty() {
+                    Err(anyhow!("项目级技能没有关联项目"))
+                } else {
+                    project_paths.iter().try_for_each(|path| {
+                        let root = Self::project_tool_root(&tool, path)
+                            .ok_or_else(|| anyhow!("工具 {} 未配置项目内技能目录", tool.id))?;
+                        Self::deploy_to_tool_at(db, record, &tool, &root)
+                    })
                 }
             } else {
                 Self::deploy_to_tool(db, record, &tool)
             };
             match result {
                 Ok(()) => deployed.push(tool_id.clone()),
-                Err(err) => {
-                    log::warn!("部署 Skill {} 到工具 {} 失败: {err}", record.id, tool_id)
-                }
+                Err(err) => log::warn!("部署 Skill {} 到工具 {} 失败: {err}", record.id, tool_id),
             }
         }
         deployed
@@ -2410,6 +2434,7 @@ impl SkillService {
             scope: SKILL_SCOPE_PROJECT.to_string(),
             project_id: Some(project.0.to_string()),
             project_path: Some(project_key.clone()),
+            project_ids: vec![project.0.to_string()],
             source_type: meta.source_type.clone(),
             source_repo: meta.source_repo.clone(),
             source_branch: meta.source_branch.clone(),
@@ -2703,6 +2728,7 @@ impl SkillService {
             scope: SKILL_SCOPE_GLOBAL.to_string(),
             project_id: None,
             project_path: None,
+            project_ids: vec![],
             source_type: source_type.to_string(),
             source_repo: None,
             source_branch: None,
@@ -2963,6 +2989,7 @@ impl SkillService {
             scope: SKILL_SCOPE_GLOBAL.to_string(),
             project_id: None,
             project_path: None,
+            project_ids: vec![],
             source_type: if registry_match.is_some() {
                 "skills_sh".to_string()
             } else {
@@ -3100,17 +3127,13 @@ impl SkillService {
         // 规范存储目录（新模型中央库命名空间 / 旧版项目内位置，含兜底解析）
         let storage = Self::skill_storage_dir(db, record)?;
 
-        // 1. 各工具项目内分发条目（record.enabled_tools 记录的工具）。
-        // 与全局卸载同语义：目标位置即工具纳管命名空间，存在即删
+        // Remove the selected tools from every project before deleting the shared payload.
         let tools = db.list_tool_adapters()?;
         for tool_id in &record.enabled_tools {
-            let Some(tool) = tools.iter().find(|t| &t.id == tool_id) else {
+            let Some(tool) = tools.iter().find(|tool| &tool.id == tool_id) else {
                 continue;
             };
-            let Some(dest_root) = Self::project_tool_root(tool, &project_path) else {
-                continue;
-            };
-            Self::remove_from_tool_at(db, record, tool, &dest_root).with_context(|| {
+            Self::remove_from_tool(db, record, tool).with_context(|| {
                 format!(
                     "卸载中止：删除工具 {} 的项目内分发失败，技能记录已保留",
                     tool.id
@@ -3195,6 +3218,550 @@ impl SkillService {
         Ok(())
     }
 
+    /// Removes one project's association without uninstalling a skill still used elsewhere.
+    pub fn remove_skill_from_project(
+        db: &Database,
+        skill_id: &str,
+        project_id: &str,
+    ) -> Result<()> {
+        let _guard = state_write_guard();
+        let record = db
+            .get_skill(skill_id)?
+            .ok_or_else(|| anyhow!("Skill not found: {skill_id}"))?;
+        if !record.is_project() || !record.project_ids.iter().any(|id| id == project_id) {
+            return Ok(());
+        }
+        let numeric_id = project_id
+            .parse::<i64>()
+            .map_err(|_| anyhow!("Invalid project id: {project_id}"))?;
+        let project = db
+            .get_skill_project(numeric_id)?
+            .ok_or_else(|| anyhow!("Project is not registered: {project_id}"))?;
+        let tools = db.list_tool_adapters()?;
+        for tool_id in &record.enabled_tools {
+            if let Some(tool) = tools.iter().find(|tool| &tool.id == tool_id) {
+                if let Some(root) = Self::project_tool_root(tool, &project.2) {
+                    Self::remove_from_tool_at(db, &record, tool, &root)?;
+                }
+            }
+        }
+
+        let remaining = record
+            .project_ids
+            .iter()
+            .filter(|id| id.as_str() != project_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        if remaining.is_empty() {
+            return Self::uninstall_project_skill(db, &record);
+        }
+        db.set_skill_projects(
+            skill_id,
+            &remaining,
+            SKILL_SCOPE_PROJECT,
+            record
+                .project_id
+                .as_deref()
+                .zip(record.project_path.as_deref()),
+        )?;
+        Ok(())
+    }
+
+    /// Moves a global skill into project scope or adds targets to a project skill.
+    pub fn assign_skill_to_projects(
+        db: &Database,
+        skill_id: &str,
+        project_ids: Vec<String>,
+    ) -> Result<()> {
+        let _guard = state_write_guard();
+        let record = db
+            .get_skill(skill_id)?
+            .ok_or_else(|| anyhow!("Skill not found: {skill_id}"))?;
+        if project_ids.is_empty() {
+            return Err(anyhow!("At least one project must be selected"));
+        }
+        let projects = db.list_skill_projects()?;
+        let mut selected = Vec::with_capacity(project_ids.len());
+        let mut selected_ids = HashSet::new();
+        for id in project_ids {
+            if !selected_ids.insert(id.clone())
+                || (record.is_project() && record.project_ids.contains(&id))
+            {
+                continue;
+            }
+            let numeric_id = id
+                .parse::<i64>()
+                .map_err(|_| anyhow!("Invalid project id: {id}"))?;
+            let project = projects
+                .iter()
+                .find(|project| project.0 == numeric_id)
+                .ok_or_else(|| anyhow!("Project is not registered: {id}"))?;
+            if !Path::new(&project.2).is_dir() {
+                return Err(anyhow!("Project directory is unavailable: {}", project.2));
+            }
+            selected.push((id, project.2.clone()));
+        }
+        if selected.is_empty() {
+            return Ok(());
+        }
+
+        let tools = db.list_tool_adapters()?;
+        let enabled_tools = record
+            .enabled_tools
+            .iter()
+            .filter_map(|id| tools.iter().find(|tool| &tool.id == id))
+            .collect::<Vec<_>>();
+        for tool in &enabled_tools {
+            for (_, project_path) in &selected {
+                if Self::project_tool_root(tool, project_path).is_none() {
+                    return Err(anyhow!("Tool {} has no project skill directory", tool.id));
+                }
+            }
+        }
+
+        let was_global = !record.is_project();
+        if was_global {
+            for (_, project_path) in &selected {
+                let legacy = Self::legacy_project_storage_dir(project_path, &record.directory);
+                if legacy.exists() {
+                    return Err(anyhow!(
+                        "Cannot assign skill {} because the project already contains {}",
+                        record.directory,
+                        legacy.display()
+                    ));
+                }
+                for tool in &enabled_tools {
+                    let root = Self::project_tool_root(tool, project_path).ok_or_else(|| {
+                        anyhow!("Tool {} has no project skill directory", tool.id)
+                    })?;
+                    let destination = root.join(&record.directory);
+                    if destination.exists() {
+                        return Err(anyhow!(
+                            "Cannot assign skill {} because the project already contains {}",
+                            record.directory,
+                            destination.display()
+                        ));
+                    }
+                }
+            }
+        }
+
+        if was_global {
+            for tool in &enabled_tools {
+                if let Err(error) = Self::remove_from_tool(db, &record, tool) {
+                    let restored = Self::deploy_to_tools(db, &record, &record.enabled_tools);
+                    if restored.len() != record.enabled_tools.len() {
+                        log::error!(
+                            "Failed to restore all global skill distributions for {}: restored {:?} of {:?}",
+                            skill_id,
+                            restored,
+                            record.enabled_tools
+                        );
+                    }
+                    return Err(error).context("Failed to remove global skill distribution");
+                }
+            }
+        }
+
+        let mut updated = record.clone();
+        updated.scope = SKILL_SCOPE_PROJECT.to_string();
+        updated
+            .project_ids
+            .extend(selected.iter().map(|(id, _)| id.clone()));
+        if updated.project_id.is_none() || was_global {
+            updated.project_id = Some(selected[0].0.clone());
+            updated.project_path = Some(selected[0].1.clone());
+        }
+
+        let mut deployed_destinations: Vec<(&ToolAdapter, PathBuf)> = Vec::new();
+        let deployment_result = (|| -> Result<()> {
+            for (_, project_path) in &selected {
+                for tool in &enabled_tools {
+                    let root = Self::project_tool_root(tool, project_path).ok_or_else(|| {
+                        anyhow!("Tool {} has no project skill directory", tool.id)
+                    })?;
+                    Self::deploy_to_tool_at(db, &updated, tool, &root)?;
+                    deployed_destinations.push((*tool, root));
+                }
+            }
+            Ok(())
+        })();
+        if let Err(error) = deployment_result {
+            for (tool, root) in deployed_destinations.iter().rev() {
+                if let Err(rollback_error) = Self::remove_from_tool_at(db, &updated, tool, root) {
+                    log::error!(
+                        "Failed to roll back project skill distribution {} at {}: {rollback_error}",
+                        skill_id,
+                        root.display()
+                    );
+                }
+            }
+            if was_global {
+                let restored = Self::deploy_to_tools(db, &record, &record.enabled_tools);
+                if restored.len() != record.enabled_tools.len() {
+                    log::error!(
+                        "Failed to restore all global skill distributions for {}: restored {:?} of {:?}",
+                        skill_id,
+                        restored,
+                        record.enabled_tools
+                    );
+                }
+            }
+            return Err(error).context("Failed to distribute skill to selected project");
+        }
+
+        let primary = updated
+            .project_id
+            .as_deref()
+            .zip(updated.project_path.as_deref());
+        if let Err(error) =
+            db.set_skill_projects(skill_id, &updated.project_ids, SKILL_SCOPE_PROJECT, primary)
+        {
+            for (tool, root) in deployed_destinations.iter().rev() {
+                if let Err(rollback_error) = Self::remove_from_tool_at(db, &updated, tool, root) {
+                    log::error!(
+                        "Failed to roll back project skill distribution {} at {}: {rollback_error}",
+                        skill_id,
+                        root.display()
+                    );
+                }
+            }
+            if was_global {
+                let restored = Self::deploy_to_tools(db, &record, &record.enabled_tools);
+                if restored.len() != record.enabled_tools.len() {
+                    log::error!(
+                        "Failed to restore all global skill distributions for {}: restored {:?} of {:?}",
+                        skill_id,
+                        restored,
+                        record.enabled_tools
+                    );
+                }
+            }
+            return Err(error).context("Failed to save skill project assignments");
+        }
+        Ok(())
+    }
+
+    fn rollback_scheduled_deployments(
+        db: &Database,
+        project_record: &SkillRecord,
+        deployed_destinations: &[(&ToolAdapter, PathBuf)],
+        restore_global: bool,
+        global_record: &SkillRecord,
+    ) {
+        for (tool, root) in deployed_destinations.iter().rev() {
+            if let Err(error) = Self::remove_from_tool_at(db, project_record, tool, root) {
+                log::error!(
+                    "Failed to roll back scheduled skill {} for tool {} at {}: {error:#}",
+                    project_record.id,
+                    tool.id,
+                    root.display()
+                );
+            }
+        }
+        if restore_global {
+            for tool_id in &global_record.enabled_tools {
+                match db.get_tool_adapter(tool_id) {
+                    Ok(Some(tool)) => match Self::tool_root(&tool) {
+                        Ok(root) => {
+                            if let Err(error) =
+                                Self::deploy_to_tool_at(db, global_record, &tool, &root)
+                            {
+                                log::error!(
+                                    "Failed to restore global skill {} for tool {} at {}: {error:#}",
+                                    global_record.id,
+                                    tool_id,
+                                    root.display()
+                                );
+                            }
+                        }
+                        Err(error) => log::error!(
+                            "Failed to resolve global skill {} path for tool {}: {error:#}",
+                            global_record.id,
+                            tool_id
+                        ),
+                    },
+                    Ok(None) => log::error!(
+                        "Failed to restore global skill {} for missing tool {}",
+                        global_record.id,
+                        tool_id
+                    ),
+                    Err(error) => log::error!(
+                        "Failed to look up tool {} while restoring global skill {}: {error:#}",
+                        tool_id,
+                        global_record.id
+                    ),
+                }
+            }
+        }
+    }
+
+    /// Schedules a skill on selected projects and tools, committing all assignment metadata together.
+    pub fn schedule_skill_to_projects(
+        db: &Database,
+        skill_id: &str,
+        project_ids: Vec<String>,
+        tool_ids: Vec<String>,
+    ) -> Result<()> {
+        let _guard = state_write_guard();
+        let record = db
+            .get_skill(skill_id)?
+            .ok_or_else(|| anyhow!("Skill not found: {skill_id}"))?;
+        if project_ids.is_empty() {
+            return Err(anyhow!("At least one project must be selected"));
+        }
+        if tool_ids.is_empty() {
+            return Err(anyhow!("At least one tool must be selected"));
+        }
+
+        let projects = db.list_skill_projects()?;
+        let mut requested_projects = Vec::new();
+        let mut seen_projects = HashSet::new();
+        for id in project_ids {
+            let numeric_id = id
+                .parse::<i64>()
+                .map_err(|_| anyhow!("Invalid project id: {id}"))?;
+            let normalized_id = numeric_id.to_string();
+            if !seen_projects.insert(normalized_id.clone()) {
+                continue;
+            }
+            let project = projects
+                .iter()
+                .find(|project| project.0 == numeric_id)
+                .ok_or_else(|| anyhow!("Project is not registered: {id}"))?;
+            if !Path::new(&project.2).is_dir() {
+                return Err(anyhow!("Project directory is unavailable: {}", project.2));
+            }
+            requested_projects.push((normalized_id, project.2.clone()));
+        }
+
+        let tools = db.list_tool_adapters()?;
+        let mut requested_tools = Vec::new();
+        let mut seen_tools = HashSet::new();
+        for id in tool_ids {
+            if !seen_tools.insert(id.clone()) {
+                continue;
+            }
+            let tool = tools
+                .iter()
+                .find(|tool| tool.id == id)
+                .ok_or_else(|| anyhow!("Tool not found: {id}"))?;
+            if !tool.is_enabled {
+                return Err(anyhow!("Tool is disabled: {id}"));
+            }
+            requested_tools.push(tool);
+        }
+
+        let was_project = record.is_project();
+        let original_global_tools = if was_project {
+            Vec::new()
+        } else {
+            record
+                .enabled_tools
+                .iter()
+                .map(|id| {
+                    tools
+                        .iter()
+                        .find(|tool| &tool.id == id)
+                        .ok_or_else(|| anyhow!("Tool not found: {id}"))
+                })
+                .collect::<Result<Vec<_>>>()?
+        };
+        let mut project_ids = record.project_ids.clone();
+        let mut project_paths = HashMap::new();
+        for project in &projects {
+            project_paths.insert(project.0.to_string(), project.2.clone());
+        }
+        let mut newly_added_projects = Vec::new();
+        for (id, path) in requested_projects {
+            if !project_ids.iter().any(|existing| existing == &id) {
+                project_ids.push(id.clone());
+                newly_added_projects.push((id, path));
+            }
+        }
+        let selected_tool_ids: Vec<String> =
+            requested_tools.iter().map(|tool| tool.id.clone()).collect();
+        let mut enabled_tool_ids = if was_project {
+            record.enabled_tools.clone()
+        } else {
+            Vec::new()
+        };
+        let mut newly_added_tools = Vec::new();
+        for id in selected_tool_ids {
+            if !enabled_tool_ids.iter().any(|existing| existing == &id) {
+                newly_added_tools.push(id.clone());
+                enabled_tool_ids.push(id);
+            }
+        }
+        let all_project_ids = project_ids.clone();
+        let all_project_paths = all_project_ids
+            .iter()
+            .map(|id| {
+                project_paths
+                    .get(id)
+                    .cloned()
+                    .or_else(|| {
+                        (record.project_id.as_deref() == Some(id.as_str()))
+                            .then(|| record.project_path.clone())
+                            .flatten()
+                    })
+                    .ok_or_else(|| anyhow!("Project is not registered: {id}"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        for path in &all_project_paths {
+            if !Path::new(path).is_dir() {
+                return Err(anyhow!("Project directory is unavailable: {path}"));
+            }
+        }
+
+        let deployed_tool_adapters = enabled_tool_ids
+            .iter()
+            .map(|id| {
+                tools
+                    .iter()
+                    .find(|tool| &tool.id == id)
+                    .ok_or_else(|| anyhow!("Tool not found: {id}"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        for tool in &deployed_tool_adapters {
+            for path in &all_project_paths {
+                if Self::project_tool_root(tool, path).is_none() {
+                    return Err(anyhow!("Tool {} has no project skill directory", tool.id));
+                }
+            }
+        }
+
+        if !was_project {
+            for path in &all_project_paths {
+                let legacy = Self::legacy_project_storage_dir(path, &record.directory);
+                if legacy.exists() || Self::is_symlink(&legacy) {
+                    return Err(anyhow!(
+                        "Cannot assign skill {} because the project already contains {}",
+                        record.directory,
+                        legacy.display()
+                    ));
+                }
+            }
+        }
+
+        let mut updated = record.clone();
+        updated.scope = SKILL_SCOPE_PROJECT.to_string();
+        updated.project_ids = all_project_ids;
+        updated.enabled_tools = enabled_tool_ids.clone();
+        if !was_project || updated.project_id.is_none() {
+            updated.project_id = project_ids.first().cloned();
+            updated.project_path = updated
+                .project_id
+                .as_ref()
+                .and_then(|id| project_paths.get(id).cloned());
+        }
+
+        // Only deploy new (project, tool) pairs, so rollback never removes pre-existing payloads.
+        let mut deployed_destinations: Vec<(&ToolAdapter, PathBuf)> = Vec::new();
+        let deployment = (|| -> Result<()> {
+            for (_, project_path) in &newly_added_projects {
+                for tool_id in &record.enabled_tools {
+                    if !was_project {
+                        continue;
+                    }
+                    let tool = tools
+                        .iter()
+                        .find(|tool| &tool.id == tool_id)
+                        .ok_or_else(|| anyhow!("Tool not found: {tool_id}"))?;
+                    let root = Self::project_tool_root(tool, project_path).ok_or_else(|| {
+                        anyhow!("Tool {} has no project skill directory", tool.id)
+                    })?;
+                    let dest = root.join(&record.directory);
+                    if dest.exists() || Self::is_symlink(&dest) {
+                        return Err(anyhow!(
+                            "Project skill destination already exists: {}",
+                            dest.display()
+                        ));
+                    }
+                    deployed_destinations.push((tool, root.clone()));
+                    Self::deploy_to_tool_at(db, &updated, tool, &root)?;
+                }
+            }
+            for tool_id in &newly_added_tools {
+                let tool = tools.iter().find(|tool| &tool.id == tool_id).unwrap();
+                for path in &all_project_paths {
+                    let root = Self::project_tool_root(tool, path).ok_or_else(|| {
+                        anyhow!("Tool {} has no project skill directory", tool.id)
+                    })?;
+                    let dest = root.join(&record.directory);
+                    if dest.exists() || Self::is_symlink(&dest) {
+                        return Err(anyhow!(
+                            "Project skill destination already exists: {}",
+                            dest.display()
+                        ));
+                    }
+                    deployed_destinations.push((tool, root.clone()));
+                    Self::deploy_to_tool_at(db, &updated, tool, &root)?;
+                }
+            }
+            Ok(())
+        })();
+        if let Err(error) = deployment {
+            Self::rollback_scheduled_deployments(
+                db,
+                &updated,
+                &deployed_destinations,
+                false,
+                &record,
+            );
+            return Err(error).context("Failed to distribute skill to selected projects");
+        }
+
+        if !was_project {
+            for tool in &original_global_tools {
+                if let Err(error) = Self::remove_from_tool(db, &record, tool) {
+                    Self::rollback_scheduled_deployments(
+                        db,
+                        &updated,
+                        &deployed_destinations,
+                        true,
+                        &record,
+                    );
+                    return Err(error).context("Failed to remove global skill distribution");
+                }
+            }
+        }
+
+        let primary = updated
+            .project_id
+            .as_deref()
+            .zip(updated.project_path.as_deref());
+        match db.set_skill_deployment(
+            skill_id,
+            &updated.project_ids,
+            primary,
+            &updated.enabled_tools,
+        ) {
+            Ok(true) => {}
+            Ok(false) => {
+                Self::rollback_scheduled_deployments(
+                    db,
+                    &updated,
+                    &deployed_destinations,
+                    !was_project,
+                    &record,
+                );
+                return Err(anyhow!("Skill not found: {skill_id}"));
+            }
+            Err(error) => {
+                Self::rollback_scheduled_deployments(
+                    db,
+                    &updated,
+                    &deployed_destinations,
+                    !was_project,
+                    &record,
+                );
+                return Err(error).context("Failed to save skill project assignments");
+            }
+        }
+        Ok(())
+    }
+
     /// 切换技能在单个工具上的分发状态
     pub fn toggle_tool(db: &Database, id: &str, tool_id: &str, enabled: bool) -> Result<()> {
         let _guard = state_write_guard();
@@ -3207,36 +3774,18 @@ impl SkillService {
             .ok_or_else(|| anyhow!("Tool not found: {tool_id}"))?;
 
         if enabled {
-            if record.is_project() {
-                // 项目级：分发到该工具配置的项目内技能目录
-                let project_path = record
-                    .project_path
-                    .as_deref()
-                    .ok_or_else(|| anyhow!("项目级 Skill {} 缺少 project_path", record.id))?
-                    .to_string();
-                let dest_root = Self::project_tool_root(&tool, &project_path).ok_or_else(|| {
-                    anyhow!(
-                        "工具 {} 未配置项目内技能目录，无法项目级分发（可在「AI 工具」页配置）",
-                        tool.id
-                    )
-                })?;
-                Self::deploy_to_tool_at(db, &record, &tool, &dest_root)?;
-            } else {
-                Self::deploy_to_tool(db, &record, &tool)?;
+            let deployed = Self::deploy_to_tools(db, &record, &[tool_id.to_string()]);
+            if deployed.is_empty() {
+                return Err(anyhow!(
+                    "Failed to distribute skill {} to {tool_id}",
+                    record.id
+                ));
             }
             if !record.enabled_tools.iter().any(|t| t == tool_id) {
                 record.enabled_tools.push(tool_id.to_string());
             }
         } else {
-            if record.is_project() {
-                if let Some(project_path) = record.project_path.as_deref() {
-                    if let Some(dest_root) = Self::project_tool_root(&tool, project_path) {
-                        Self::remove_from_tool_at(db, &record, &tool, &dest_root)?;
-                    }
-                }
-            } else {
-                Self::remove_from_tool(db, &record, &tool)?;
-            }
+            Self::remove_from_tool(db, &record, &tool)?;
             record.enabled_tools.retain(|t| t != tool_id);
         }
         db.update_skill_enabled_tools(id, &record.enabled_tools)?;
@@ -3502,17 +4051,17 @@ impl SkillService {
 
         // 项目级：刷新各工具项目内目录中的分发（symlink 指向不变则不动，copy 重新替换）
         if current.is_project() {
-            if let Some(project_path) = current.project_path.as_ref() {
-                let tools = db.list_tool_adapters()?;
+            let project_paths = Self::assigned_project_paths(db, &current)?;
+            let tools = db.list_tool_adapters()?;
+            for project_path in &project_paths {
                 for tool_id in &current.enabled_tools {
-                    let Some(tool) = tools.iter().find(|t| &t.id == tool_id) else {
+                    let Some(tool) = tools.iter().find(|tool| &tool.id == tool_id) else {
                         continue;
                     };
                     let Some(dest_root) = Self::project_tool_root(tool, project_path) else {
                         continue;
                     };
                     let linked = dest_root.join(&current.directory);
-                    // symlink 指向 dest，内容更新自动可见；copy 需要重新替换
                     if (linked.exists() || Self::is_symlink(&linked)) && !Self::is_symlink(&linked)
                     {
                         Self::replace_dest_with_copy(&dest, &linked, &current.directory)?;
@@ -3678,7 +4227,7 @@ impl SkillService {
         let records = db.get_all_skills()?;
         let managed_project_destinations: HashSet<String> = records
             .values()
-            .filter(|skill| skill.project_path.as_deref() == Some(project.2.as_str()))
+            .filter(|skill| skill.project_ids.iter().any(|id| id == project_id))
             .flat_map(|skill| {
                 skill
                     .enabled_tools
@@ -3696,8 +4245,7 @@ impl SkillService {
         let managed_project_sources: HashSet<String> = records
             .values()
             .filter(|skill| {
-                skill.project_path.as_deref() == Some(project.2.as_str())
-                    && skill.source_type == "local"
+                skill.project_ids.iter().any(|id| id == project_id) && skill.source_type == "local"
             })
             .flat_map(|skill| {
                 let Some(relative_path) = skill.source_subpath.as_deref() else {
@@ -3718,7 +4266,7 @@ impl SkillService {
             .collect();
         let managed_project_hashes: HashSet<String> = records
             .values()
-            .filter(|skill| skill.project_path.as_deref() == Some(project.2.as_str()))
+            .filter(|skill| skill.project_ids.iter().any(|id| id == project_id))
             .filter_map(|skill| skill.content_hash.clone())
             .collect();
         let mut occupied_dirs: HashSet<String> = records
@@ -4115,6 +4663,7 @@ impl SkillService {
                 scope: SKILL_SCOPE_GLOBAL.to_string(),
                 project_id: None,
                 project_path: None,
+                project_ids: vec![],
                 source_type: if registry_match.is_some() {
                     "skills_sh".to_string()
                 } else {
@@ -4345,11 +4894,13 @@ impl SkillService {
             .map(|p| p.display().to_string())
             .unwrap_or_default();
 
-        let project_name = record.project_id.as_deref().and_then(|id| {
-            id.parse::<i64>()
-                .ok()
-                .and_then(|id| projects.iter().find(|p| p.0 == id).map(|p| p.1.clone()))
-        });
+        let project_names = record
+            .project_ids
+            .iter()
+            .filter_map(|id| id.parse::<i64>().ok())
+            .filter_map(|id| projects.iter().find(|project| project.0 == id))
+            .map(|project| project.1.clone())
+            .collect::<Vec<_>>();
 
         let installed_at =
             iso_time(record.installed_at).unwrap_or_else(|| UNKNOWN_TIME_LABEL.to_string());
@@ -4371,17 +4922,22 @@ impl SkillService {
                 let actually_deployed = flagged
                     && Self::require_valid_directory(&record.directory)
                         .map(|directory| {
-                            let dest = if record.is_project() {
-                                record
-                                    .project_path
-                                    .as_deref()
-                                    .and_then(|p| Self::project_tool_root(t, p))
-                                    .map(|root| root.join(&directory))
+                            if record.is_project() {
+                                let paths =
+                                    Self::assigned_project_paths(db, record).unwrap_or_default();
+                                !paths.is_empty()
+                                    && paths.iter().all(|path| {
+                                        Self::project_tool_root(t, path).is_some_and(|root| {
+                                            let dest = root.join(&directory);
+                                            dest.exists() || Self::is_symlink(&dest)
+                                        })
+                                    })
                             } else {
-                                Self::tool_root(t).ok().map(|root| root.join(&directory))
+                                Self::tool_root(t)
+                                    .map(|root| root.join(&directory))
+                                    .map(|dest| dest.exists() || Self::is_symlink(&dest))
+                                    .unwrap_or(false)
                             }
-                            .unwrap_or_default();
-                            dest.exists() || Self::is_symlink(&dest)
                         })
                         .unwrap_or(false);
                 (t.id.clone(), actually_deployed)
@@ -4436,8 +4992,8 @@ impl SkillService {
             description_status: record.description_status.clone(),
             tags: record.tags.clone(),
             scope: record.scope.clone(),
-            project_id: record.project_id.clone(),
-            project_name,
+            project_ids: record.project_ids.clone(),
+            project_names,
             source: SkillSource {
                 source_type: record.source_type.clone(),
                 url: record.source_url.clone(),
@@ -4585,7 +5141,7 @@ impl SkillService {
             result.push(ProjectScope {
                 id: id.to_string(),
                 name,
-                skill_count: db.count_skills_by_project_path(&path)? as usize,
+                skill_count: db.count_skills_by_project_id(id)? as usize,
                 path: path.clone(),
                 registered_at: iso_time(created_at)
                     .unwrap_or_else(|| UNKNOWN_TIME_LABEL.to_string()),
@@ -4735,11 +5291,7 @@ impl SkillService {
                 continue;
             }
             Self::require_valid_directory(&record.directory)?;
-            let project_path = record
-                .project_path
-                .as_deref()
-                .ok_or_else(|| anyhow!("项目级 Skill {} 缺少 project_path", record.id))?
-                .to_string();
+            let project_paths = Self::assigned_project_paths(db, &record)?;
             let source = Self::skill_storage_dir(db, &record)?;
             Self::validate_sync_source_dir(&source, &record.directory)?;
 
@@ -4747,43 +5299,42 @@ impl SkillService {
                 let Some(tool) = tools.iter().find(|t| &t.id == tool_id) else {
                     continue;
                 };
-                let Some(dest_root) = Self::project_tool_root(tool, &project_path) else {
-                    log::warn!("工具 {} 未配置项目内技能目录，跳过重部署", tool.id);
-                    continue;
-                };
-                let dest = dest_root.join(&record.directory);
-                if Self::paths_alias(&source, &dest) {
-                    continue;
-                }
-                match Self::inspect_destination(
-                    &source,
-                    &dest,
-                    &record.directory,
-                    DestCheckMode::Redeploy,
-                )? {
-                    // 已指向 source 或同内容副本：先删旧再按当前方式重建（symlink/copy 切换需要）
-                    Some(()) => Self::remove_path(&dest)?,
-                    // 不存在：无需处理；悬空 symlink（无数据风险）：移除旧值后再建
-                    None => {
-                        if Self::is_symlink(&dest) {
-                            Self::remove_path(&dest)?;
+                for project_path in &project_paths {
+                    let Some(dest_root) = Self::project_tool_root(tool, project_path) else {
+                        log::warn!("工具 {} 未配置项目内技能目录，跳过重部署", tool.id);
+                        continue;
+                    };
+                    let dest = dest_root.join(&record.directory);
+                    if Self::paths_alias(&source, &dest) {
+                        continue;
+                    }
+                    match Self::inspect_destination(
+                        &source,
+                        &dest,
+                        &record.directory,
+                        DestCheckMode::Redeploy,
+                    )? {
+                        Some(()) => Self::remove_path(&dest)?,
+                        None => {
+                            if Self::is_symlink(&dest) {
+                                Self::remove_path(&dest)?;
+                            }
                         }
                     }
-                }
-                fs::create_dir_all(&dest_root)?;
-                match method {
-                    SyncMethod::Symlink => Self::create_symlink(&source, &dest)?,
-                    SyncMethod::Copy => Self::copy_dir_recursive(&source, &dest)?,
-                    SyncMethod::Auto => {
-                        if let Err(err) = Self::create_symlink(&source, &dest) {
-                            log::warn!("项目技能 symlink 失败，回退为复制: {err}");
-                            Self::copy_dir_recursive(&source, &dest)?;
+                    fs::create_dir_all(&dest_root)?;
+                    match method {
+                        SyncMethod::Symlink => Self::create_symlink(&source, &dest)?,
+                        SyncMethod::Copy => Self::copy_dir_recursive(&source, &dest)?,
+                        SyncMethod::Auto => {
+                            if let Err(err) = Self::create_symlink(&source, &dest) {
+                                log::warn!("项目技能 symlink 失败，回退为复制: {err}");
+                                Self::copy_dir_recursive(&source, &dest)?;
+                            }
                         }
                     }
+                    done += 1;
                 }
-                done += 1;
             }
-
             // 重建后持久化当前方式，后续 toggle 与新建分发保持一致
             if record.deploy_method != method_raw {
                 record.deploy_method = method_raw.to_string();
@@ -5471,6 +6022,7 @@ mod tests {
             scope: SKILL_SCOPE_GLOBAL.to_string(),
             project_id: None,
             project_path: None,
+            project_ids: vec![],
             source_type: "github".to_string(),
             source_repo: Some("owner/repo".to_string()),
             source_branch: None,
@@ -5517,6 +6069,7 @@ mod tests {
             scope: SKILL_SCOPE_GLOBAL.to_string(),
             project_id: None,
             project_path: None,
+            project_ids: vec![],
             source_type: "github".to_string(),
             source_repo: None,
             source_branch: None,
@@ -5621,6 +6174,7 @@ mod tests {
             scope: scope.to_string(),
             project_id: project_path.map(|p| p.to_string()),
             project_path: project_path.map(|p| p.to_string()),
+            project_ids: vec![],
             source_type: "github".to_string(),
             source_repo: Some(format!("owner/{id}")),
             source_branch: None,
@@ -5703,6 +6257,250 @@ mod tests {
             .flatten()
             .map(|e| e.path().join(install_name))
             .find(|p| p.join("SKILL.md").is_file())
+    }
+
+    #[test]
+    fn global_skill_can_be_shared_across_projects_and_unbound_safely() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("library");
+        fs::create_dir_all(library.join("shared")).unwrap();
+        fs::write(library.join("shared/SKILL.md"), "# shared").unwrap();
+        let db = memory_db_with_library(&library);
+        let home = config::get_home_dir().expect("home directory");
+        let temporary_tool_home = tempfile::tempdir_in(&home).expect("temporary tool home");
+        let global_tool_root = temporary_tool_home.path().join("skills");
+        let tool = test_tool("assignment-test", &global_tool_root.display().to_string());
+        db.insert_tool_adapter(&tool, 0).unwrap();
+        let first_path = temp.path().join("first");
+        let second_path = temp.path().join("second");
+        fs::create_dir_all(&first_path).unwrap();
+        fs::create_dir_all(&second_path).unwrap();
+        let first_id = db
+            .add_skill_project("first", &first_path.display().to_string())
+            .unwrap()
+            .to_string();
+        let second_id = db
+            .add_skill_project("second", &second_path.display().to_string())
+            .unwrap()
+            .to_string();
+        let skill_id = "owner/repo:shared";
+        let mut record = test_skill_record(skill_id, "shared", SKILL_SCOPE_GLOBAL, None);
+        record.enabled_tools = vec!["assignment-test".to_string()];
+        db.save_skill(&record).unwrap();
+        assert_eq!(
+            SkillService::deploy_to_tools(&db, &record, &record.enabled_tools),
+            vec!["assignment-test"]
+        );
+        assert!(global_tool_root.join("shared/SKILL.md").is_file());
+
+        let first_tool_root =
+            SkillService::project_tool_root(&tool, &first_path.display().to_string()).unwrap();
+        let second_tool_root =
+            SkillService::project_tool_root(&tool, &second_path.display().to_string()).unwrap();
+
+        SkillService::assign_skill_to_projects(&db, skill_id, vec![first_id.clone()]).unwrap();
+        SkillService::assign_skill_to_projects(&db, skill_id, vec![second_id.clone()]).unwrap();
+        assert!(!global_tool_root.join("shared").exists());
+        assert!(first_tool_root.join("shared/SKILL.md").is_file());
+        assert!(second_tool_root.join("shared/SKILL.md").is_file());
+
+        let assigned = db.get_skill(skill_id).unwrap().unwrap();
+        assert_eq!(assigned.scope, SKILL_SCOPE_PROJECT);
+        assert_eq!(
+            assigned.project_ids,
+            vec![first_id.clone(), second_id.clone()]
+        );
+        assert_eq!(
+            db.count_skills_by_project_id(first_id.parse().unwrap())
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.count_skills_by_project_id(second_id.parse().unwrap())
+                .unwrap(),
+            1
+        );
+
+        SkillService::remove_skill_from_project(&db, skill_id, &first_id).unwrap();
+        let remaining = db.get_skill(skill_id).unwrap().unwrap();
+        assert_eq!(remaining.project_ids, vec![second_id.clone()]);
+        assert_eq!(remaining.scope, SKILL_SCOPE_PROJECT);
+        assert!(!first_tool_root.join("shared").exists());
+        assert!(second_tool_root.join("shared/SKILL.md").is_file());
+        assert_eq!(
+            db.skill_ids_for_project(first_id.parse().unwrap()).unwrap(),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            db.skill_ids_for_project(second_id.parse().unwrap())
+                .unwrap(),
+            vec![skill_id]
+        );
+
+        SkillService::remove_skill_from_project(&db, skill_id, &second_id).unwrap();
+        assert!(db.get_skill(skill_id).unwrap().is_none());
+        assert!(!second_tool_root.join("shared").exists());
+        assert!(!library.join("shared").exists());
+    }
+
+    #[test]
+    fn assigning_global_skill_rejects_existing_project_payload() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("library");
+        fs::create_dir_all(library.join("shared")).unwrap();
+        fs::write(library.join("shared/SKILL.md"), "# central").unwrap();
+        let db = memory_db_with_library(&library);
+        let project_path = temp.path().join("project");
+        let existing = project_path.join(".claude/skills/shared");
+        fs::create_dir_all(&existing).unwrap();
+        fs::write(existing.join("SKILL.md"), "# project-owned").unwrap();
+        let project_id = db
+            .add_skill_project("project", &project_path.display().to_string())
+            .unwrap()
+            .to_string();
+        let skill_id = "owner/repo:shared";
+        db.save_skill(&test_skill_record(
+            skill_id,
+            "shared",
+            SKILL_SCOPE_GLOBAL,
+            None,
+        ))
+        .unwrap();
+
+        let error =
+            SkillService::assign_skill_to_projects(&db, skill_id, vec![project_id]).unwrap_err();
+
+        assert!(error.to_string().contains("already contains"));
+        assert_eq!(
+            db.get_skill(skill_id).unwrap().unwrap().scope,
+            SKILL_SCOPE_GLOBAL
+        );
+        assert_eq!(
+            fs::read_to_string(existing.join("SKILL.md")).unwrap(),
+            "# project-owned"
+        );
+    }
+
+    #[test]
+    fn scheduling_global_skill_converts_scope_and_deploys_only_selected_tool() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("library");
+        fs::create_dir_all(library.join("scheduled")).unwrap();
+        fs::write(library.join("scheduled/SKILL.md"), "# scheduled").unwrap();
+        let db = memory_db_with_library(&library);
+        let home = config::get_home_dir().unwrap();
+        let tool_home = tempfile::tempdir_in(&home).unwrap();
+        let selected_root = tool_home.path().join("selected");
+        let other_root = tool_home.path().join("other");
+        let selected = test_tool("selected-tool", &selected_root.display().to_string());
+        let other = test_tool("other-tool", &other_root.display().to_string());
+        db.insert_tool_adapter(&selected, 0).unwrap();
+        db.insert_tool_adapter(&other, 0).unwrap();
+        let project_path = temp.path().join("project");
+        fs::create_dir_all(&project_path).unwrap();
+        let project_id = db
+            .add_skill_project("project", &project_path.display().to_string())
+            .unwrap()
+            .to_string();
+        let skill_id = "owner/repo:scheduled";
+        db.save_skill(&test_skill_record(
+            skill_id,
+            "scheduled",
+            SKILL_SCOPE_GLOBAL,
+            None,
+        ))
+        .unwrap();
+
+        SkillService::schedule_skill_to_projects(
+            &db,
+            skill_id,
+            vec![project_id.clone(), project_id.clone()],
+            vec!["selected-tool".to_string(), "selected-tool".to_string()],
+        )
+        .unwrap();
+
+        let saved = db.get_skill(skill_id).unwrap().unwrap();
+        assert_eq!(saved.scope, SKILL_SCOPE_PROJECT);
+        assert_eq!(saved.project_ids, vec![project_id]);
+        assert_eq!(saved.enabled_tools, vec!["selected-tool"]);
+        let selected_project_root =
+            SkillService::project_tool_root(&selected, &project_path.display().to_string())
+                .unwrap();
+        assert!(selected_project_root.join("scheduled/SKILL.md").is_file());
+        assert!(!other_root.join("scheduled").exists());
+    }
+
+    #[test]
+    fn scheduling_existing_multi_project_skill_deploys_new_tool_to_all_projects() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("library");
+        let db = memory_db_with_library(&library);
+        let home = config::get_home_dir().unwrap();
+        let tool_home = tempfile::tempdir_in(&home).unwrap();
+        let existing_tool =
+            test_tool_under_home("existing-tool", tool_home.path(), ".existing/skills");
+        let selected_tool =
+            test_tool_under_home("selected-tool", tool_home.path(), ".selected/skills");
+        db.insert_tool_adapter(&existing_tool, 0).unwrap();
+        db.insert_tool_adapter(&selected_tool, 0).unwrap();
+        let first_path = temp.path().join("first");
+        let second_path = temp.path().join("second");
+        let third_path = temp.path().join("third");
+        for path in [&first_path, &second_path, &third_path] {
+            fs::create_dir_all(path).unwrap();
+        }
+        let first_id = db
+            .add_skill_project("first", &first_path.display().to_string())
+            .unwrap()
+            .to_string();
+        let second_id = db
+            .add_skill_project("second", &second_path.display().to_string())
+            .unwrap()
+            .to_string();
+        let third_id = db
+            .add_skill_project("third", &third_path.display().to_string())
+            .unwrap()
+            .to_string();
+        let storage = library
+            .join("projects")
+            .join(SkillService::project_storage_namespace(
+                &first_path.display().to_string(),
+            ))
+            .join("shared");
+        fs::create_dir_all(&storage).unwrap();
+        fs::write(storage.join("SKILL.md"), "# shared").unwrap();
+        let mut record = test_skill_record(
+            "owner/repo:shared",
+            "shared",
+            SKILL_SCOPE_PROJECT,
+            Some(&first_path.display().to_string()),
+        );
+        record.project_id = Some(first_id.clone());
+        record.project_path = Some(first_path.display().to_string());
+        record.project_ids = vec![first_id.clone(), second_id.clone()];
+        record.enabled_tools = vec!["existing-tool".to_string()];
+        db.save_skill(&record).unwrap();
+
+        SkillService::schedule_skill_to_projects(
+            &db,
+            &record.id,
+            vec![third_id.clone()],
+            vec!["selected-tool".to_string()],
+        )
+        .unwrap();
+
+        let saved = db.get_skill(&record.id).unwrap().unwrap();
+        assert_eq!(saved.project_ids, vec![first_id, second_id, third_id]);
+        assert_eq!(
+            saved.enabled_tools,
+            vec!["existing-tool".to_string(), "selected-tool".to_string()]
+        );
+        for path in [&first_path, &second_path, &third_path] {
+            let selected_project_root =
+                SkillService::project_tool_root(&selected_tool, &path.display().to_string())
+                    .unwrap();
+            assert!(selected_project_root.join("shared/SKILL.md").is_file());
+        }
     }
 
     #[test]
@@ -5962,7 +6760,7 @@ mod tests {
         fs::create_dir_all(&library).unwrap();
         let db = memory_db_with_library(&library);
         let project_root = temp.path().join("project");
-        let skill_dir = project_root.join(".codex/skills/codex-review");
+        let skill_dir = project_root.join(".codex-test/skills/codex-review");
         fs::create_dir_all(&skill_dir).unwrap();
         fs::create_dir_all(skill_dir.join(".git")).unwrap();
         fs::write(
@@ -5977,7 +6775,7 @@ mod tests {
         .unwrap();
 
         let home = config::get_home_dir().expect("home");
-        let codex = test_tool_under_home("codex-test", &home, ".codex/skills");
+        let codex = test_tool_under_home("codex-test", &home, ".codex-test/skills");
         db.insert_tool_adapter(&codex, 0).unwrap();
         let project_id = db
             .add_skill_project("project", &project_root.display().to_string())
@@ -6014,7 +6812,7 @@ mod tests {
             Some("example/codex-review")
         );
         assert!(project_root
-            .join(".codex/skills/codex-review/SKILL.md")
+            .join(".codex-test/skills/codex-review/SKILL.md")
             .is_file());
         assert_eq!(SkillService::api_projects(&db).unwrap()[0].skill_count, 1);
         assert!(
@@ -6082,7 +6880,7 @@ mod tests {
         fs::create_dir_all(&library).unwrap();
         let db = memory_db_with_library(&library);
         let project_root = temp.path().join("project");
-        let skills_root = project_root.join(".codex/skills");
+        let skills_root = project_root.join(".codex-test/skills");
         let managed_dir = skills_root.join("same-name");
         let nested_dir = skills_root.join("category/same-name");
         fs::create_dir_all(&managed_dir).unwrap();
@@ -6091,7 +6889,7 @@ mod tests {
         fs::write(nested_dir.join("SKILL.md"), "# nested").unwrap();
 
         let home = config::get_home_dir().expect("home");
-        let codex = test_tool_under_home("codex-test", &home, ".codex/skills");
+        let codex = test_tool_under_home("codex-test", &home, ".codex-test/skills");
         db.insert_tool_adapter(&codex, 0).unwrap();
         let project_id = db
             .add_skill_project("project", &project_root.display().to_string())
@@ -6103,7 +6901,8 @@ mod tests {
             SKILL_SCOPE_PROJECT,
             Some(&project_root.display().to_string()),
         );
-        managed.project_id = Some(project_id);
+        managed.project_id = Some(project_id.clone());
+        managed.project_ids = vec![project_id];
         managed.source_type = "local".to_string();
         managed.enabled_tools = vec!["codex-test".to_string()];
         db.save_skill(&managed).unwrap();
@@ -6158,8 +6957,11 @@ mod tests {
         let home = config::get_home_dir().expect("home");
         let project_root = temp.path().join("proj");
         fs::create_dir_all(&project_root).unwrap();
+        let project_id = db
+            .add_skill_project("proj", &project_root.display().to_string())
+            .unwrap();
         let project = (
-            1i64,
+            project_id,
             "proj".to_string(),
             project_root.display().to_string(),
             1,
@@ -6210,13 +7012,16 @@ mod tests {
         fs::create_dir_all(&project_b).unwrap();
 
         let source = write_source_skill(temp.path(), "dup-skill");
-        for (idx, root) in [&project_a, &project_b].iter().enumerate() {
-            let project = (
-                idx as i64 + 1,
-                "p".to_string(),
-                root.display().to_string(),
-                1,
-            );
+        let project_ids = [&project_a, &project_b]
+            .iter()
+            .enumerate()
+            .map(|(index, root)| {
+                db.add_skill_project(&format!("project-{index}"), &root.display().to_string())
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        for (project_id, root) in project_ids.iter().zip([&project_a, &project_b]) {
+            let project = (*project_id, "p".to_string(), root.display().to_string(), 1);
             SkillService::install_dir_to_project(
                 &db,
                 &project,
@@ -6294,8 +7099,11 @@ mod tests {
         let home = config::get_home_dir().expect("home");
         let project_root = temp.path().join("proj");
         fs::create_dir_all(&project_root).unwrap();
+        let project_id = db
+            .add_skill_project("proj", &project_root.display().to_string())
+            .unwrap();
         let project = (
-            1i64,
+            project_id,
             "proj".to_string(),
             project_root.display().to_string(),
             1,
@@ -6341,8 +7149,11 @@ mod tests {
         let home = config::get_home_dir().expect("home");
         let project_root = temp.path().join("proj");
         fs::create_dir_all(&project_root).unwrap();
+        let project_id = db
+            .add_skill_project("proj", &project_root.display().to_string())
+            .unwrap();
         let project = (
-            1i64,
+            project_id,
             "proj".to_string(),
             project_root.display().to_string(),
             1,

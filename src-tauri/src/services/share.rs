@@ -135,6 +135,7 @@ mod tests {
             scope: SKILL_SCOPE_GLOBAL.to_string(),
             project_id: None,
             project_path: None,
+            project_ids: vec![],
             source_type: if repo.is_some() { "github" } else { "local" }.to_string(),
             source_repo: repo.map(|r| r.to_string()),
             source_branch: repo.map(|_| "main".to_string()),

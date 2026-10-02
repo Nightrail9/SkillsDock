@@ -522,6 +522,27 @@ pub async fn import_project_skills(
 }
 
 #[tauri::command]
+pub fn assign_skill_to_projects(
+    state: State<'_, AppState>,
+    skill_id: String,
+    project_ids: Vec<String>,
+) -> CmdResult<()> {
+    SkillService::assign_skill_to_projects(&state.db, &skill_id, project_ids)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn schedule_skill_to_projects(
+    state: State<'_, AppState>,
+    skill_id: String,
+    project_ids: Vec<String>,
+    tool_ids: Vec<String>,
+) -> CmdResult<()> {
+    SkillService::schedule_skill_to_projects(&state.db, &skill_id, project_ids, tool_ids)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub fn remove_skill_project(
     state: State<'_, AppState>,
     id: String,
@@ -536,25 +557,19 @@ pub fn remove_skill_project(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("项目不存在: {id}"))?;
 
-    let remaining = db
-        .count_skills_by_project_path(&project.2)
-        .map_err(|e| e.to_string())?;
-    if remaining > 0 {
-        if !cleanup {
-            return Err(format!(
-                "{}{}",
-                skill_service::SKILL_PROJECT_NOT_EMPTY_PREFIX,
-                project.2
-            ));
-        }
-        // 先卸载该项目下全部技能
-        let skills = db.get_all_skills().map_err(|e| e.to_string())?;
-        for skill in skills
-            .values()
-            .filter(|s| s.is_project() && s.project_path.as_deref() == Some(project.2.as_str()))
-        {
-            SkillService::uninstall(db, &skill.id).map_err(|e| e.to_string())?;
-        }
+    let skill_ids = db
+        .skill_ids_for_project(project_id)
+        .map_err(|error| error.to_string())?;
+    if !skill_ids.is_empty() && !cleanup {
+        return Err(format!(
+            "{}{}",
+            skill_service::SKILL_PROJECT_NOT_EMPTY_PREFIX,
+            project.2
+        ));
+    }
+    for skill_id in skill_ids {
+        SkillService::remove_skill_from_project(db, &skill_id, &id)
+            .map_err(|error| error.to_string())?;
     }
 
     db.remove_skill_project(project_id)

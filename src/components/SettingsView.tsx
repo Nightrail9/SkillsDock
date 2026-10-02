@@ -36,7 +36,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { check, type Update } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { SkillDockLogo } from './icons/BrandIcons';
-import { AppSettings, ToolAdapter, AddToastFn, LlmConfigInput, ProjectScope, Skill } from '../types';
+import { AppLocale, AppSettings, ToolAdapter, AddToastFn, LlmConfigInput, ProjectScope, Skill } from '../types';
 import { useMigrateLibrary } from '../hooks/useSettings';
 import { useAppState, useInvalidateAppState } from '../hooks/useAppState';
 import { settingsApi } from '../lib/api';
@@ -52,7 +52,7 @@ import { ToolAdaptersView } from './ToolAdaptersView';
 import { ProjectsView } from './ProjectsView';
 
 /** 纯浏览器预览模式下的版本兜底值（Tauri 内一律以 getVersion() 为准） */
-const FALLBACK_APP_VERSION = '0.4.2';
+const FALLBACK_APP_VERSION = '0.5.0';
 
 export type SettingsSubTab = 'general' | 'tools' | 'projects' | 'model' | 'about';
 
@@ -209,7 +209,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setLlmMessage(null);
     try {
       await settingsApi.saveLlmConfig(llmInput());
-      setLlmMessage('模型配置已保存。');
+      setLlmMessage(t('模型配置已保存。', 'Model settings saved.'));
       await invalidateAppState();
     } catch (err) {
       setLlmMessage(errorToString(err));
@@ -226,7 +226,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       setLlmMessage(`${result.message}：${result.model}`);
       setTestPassed(true);
     } catch (err) {
-      setLlmMessage(`连接失败：${errorToString(err)}`);
+      setLlmMessage(`${t('连接失败', 'Connection failed')}: ${errorToString(err)}`);
       setTestPassed(false);
     } finally {
       setLlmBusy(null);
@@ -364,11 +364,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       const selected = await openDialog({
         directory: true,
         multiple: false,
-        title: '选择新的技能仓库目录',
+        title: t('选择新的技能仓库目录', 'Select a new skill library location'),
       });
       if (typeof selected === 'string') target = selected;
     } catch (err) {
-      addToast('error', '无法打开目录选择器', errorToString(err));
+      addToast('error', t('无法打开目录选择器', 'Unable to open the folder picker'), errorToString(err));
       return;
     }
     if (!target || target === settings.libraryPath) return;
@@ -380,25 +380,28 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           setFormData((prev) => ({ ...prev, libraryPath: target }));
           addToast(
             'success',
-            '技能仓库迁移完成',
-            `已迁移 ${result.migratedCount} 个技能${
-              result.skippedCount > 0
-                ? `，跳过 ${result.skippedCount} 个（目标已存在同名目录：${result.skipped.join('、')}）`
-                : ''
-            }，新目录：${target}`,
+            t('技能仓库迁移完成', 'Skill library migrated'),
+            t(
+              `已迁移 ${result.migratedCount} 个技能${result.skippedCount > 0 ? `，跳过 ${result.skippedCount} 个（目标已存在同名目录：${result.skipped.join('、')}）` : ''}，新目录：${target}`,
+              `Moved ${result.migratedCount} skills${result.skippedCount > 0 ? `; skipped ${result.skippedCount} because the destination already contains: ${result.skipped.join(', ')}` : ''}. New location: ${target}`,
+            ),
           );
         } else {
-          const skippedDetail =
-            result.skippedCount > 0 ? `（${result.skipped.join('、')}）` : '';
-          const detail = `成功 ${result.migratedCount} 项、跳过 ${result.skippedCount} 项${skippedDetail}、失败 ${result.errors.length} 项：\n${result.errors.join('\n')}`;
+          const skippedDetail = result.skippedCount > 0
+            ? t(`（${result.skipped.join('、')}）`, ` (${result.skipped.join(', ')})`)
+            : '';
+          const detail = t(
+            `成功 ${result.migratedCount} 项、跳过 ${result.skippedCount} 项${skippedDetail}、失败 ${result.errors.length} 项：\n${result.errors.join('\n')}`,
+            `Moved ${result.migratedCount}, skipped ${result.skippedCount}${skippedDetail}, failed ${result.errors.length}:\n${result.errors.join('\n')}`,
+          );
           setMigrationError(detail);
-          addToast('warning', '技能仓库迁移部分失败', detail);
+          addToast('warning', t('技能仓库迁移部分失败', 'Skill library migration partially failed'), detail);
         }
       },
       onError: (err) => {
         const msg = errorToString(err);
         setMigrationError(msg);
-        addToast('error', '技能仓库迁移失败', msg);
+        addToast('error', t('技能仓库迁移失败', 'Skill library migration failed'), msg);
       },
     });
   };
@@ -444,7 +447,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         <div className="space-y-1">
           <div className="px-3 py-2 mb-1">
             <h2 className="text-xs font-bold tracking-wider text-slate-400 uppercase">
-              设置分类
+              {t('设置分类', 'Settings')}
             </h2>
           </div>
           {subNavItems.map((item) => {
@@ -485,107 +488,142 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
                 {/* 语言选择：明确显示为 Chinese 与 English */}
                 <div className="space-y-2">
-                  <label className="text-xs font-semibold text-slate-700">{t('界面语言', 'Interface language')}</label>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div
-                      onClick={() => save({ ...formData, locale: 'zh' })}
-                      className={`p-3.5 rounded-2xl border cursor-pointer transition-all flex items-center justify-between ${
+                  <label id="settings-locale-label" className="text-xs font-semibold text-slate-700">{t('界面语言', 'Interface language')}</label>
+                  <div role="radiogroup" aria-labelledby="settings-locale-label" className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <label className="cursor-pointer">
+                      <input
+                        type="radio"
+                        name="settings-locale"
+                        value="zh"
+                        checked={formData.locale === 'zh'}
+                        onChange={() => save({ ...formData, locale: 'zh' })}
+                        className="sr-only peer"
+                      />
+                      <div className={`p-3.5 rounded-2xl border transition-all flex items-center justify-between peer-focus-visible:ring-2 peer-focus-visible:ring-indigo-500 peer-focus-visible:ring-offset-2 ${
                         formData.locale === 'zh'
                           ? 'border-indigo-600 bg-indigo-50/40 ring-1 ring-indigo-600 shadow-2xs'
                           : 'border-slate-200 hover:border-slate-300 bg-slate-50/50'
-                      }`}
-                    >
-                      <div>
-                        <div className="font-bold text-slate-900 text-xs">Chinese</div>
-                        <div className="text-[11px] text-slate-500 mt-0.5">{t('简体中文界面语言', 'Simplified Chinese interface')}</div>
+                      }`}>
+                        <div>
+                          <div className="font-bold text-slate-900 text-xs">Chinese</div>
+                          <div className="text-[11px] text-slate-500 mt-0.5">{t('简体中文界面语言', 'Simplified Chinese interface')}</div>
+                        </div>
+                        {formData.locale === 'zh' && (
+                          <span aria-hidden="true" className="w-2 h-2 rounded-full bg-indigo-600" />
+                        )}
                       </div>
-                      {formData.locale === 'zh' && (
-                        <span className="w-2 h-2 rounded-full bg-indigo-600" />
-                      )}
-                    </div>
+                    </label>
 
-                    <div
-                      onClick={() => save({ ...formData, locale: 'en' })}
-                      className={`p-3.5 rounded-2xl border cursor-pointer transition-all flex items-center justify-between ${
+                    <label className="cursor-pointer">
+                      <input
+                        type="radio"
+                        name="settings-locale"
+                        value="en"
+                        checked={formData.locale === 'en'}
+                        onChange={() => save({ ...formData, locale: 'en' })}
+                        className="sr-only peer"
+                      />
+                      <div className={`p-3.5 rounded-2xl border transition-all flex items-center justify-between peer-focus-visible:ring-2 peer-focus-visible:ring-indigo-500 peer-focus-visible:ring-offset-2 ${
                         formData.locale === 'en'
                           ? 'border-indigo-600 bg-indigo-50/40 ring-1 ring-indigo-600 shadow-2xs'
                           : 'border-slate-200 hover:border-slate-300 bg-slate-50/50'
-                      }`}
-                    >
-                      <div>
-                        <div className="font-bold text-slate-900 text-xs">English</div>
-                        <div className="text-[11px] text-slate-500 mt-0.5">English interface language</div>
+                      }`}>
+                        <div>
+                          <div className="font-bold text-slate-900 text-xs">English</div>
+                          <div className="text-[11px] text-slate-500 mt-0.5">English interface language</div>
+                        </div>
+                        {formData.locale === 'en' && (
+                          <span aria-hidden="true" className="w-2 h-2 rounded-full bg-indigo-600" />
+                        )}
                       </div>
-                      {formData.locale === 'en' && (
-                        <span className="w-2 h-2 rounded-full bg-indigo-600" />
-                      )}
-                    </div>
+                    </label>
                   </div>
                 </div>
 
                 {/* 主题选择：Light / Dark / System */}
                 <div className="space-y-2 pt-2 border-t border-slate-100">
-                  <label className="text-xs font-semibold text-slate-700">{t('外观主题', 'Appearance')}</label>
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    <div
-                      onClick={() => save({ ...formData, theme: 'light' })}
-                      className={`p-3.5 rounded-2xl border cursor-pointer transition-all flex items-center gap-3 ${
+                  <label id="settings-theme-label" className="text-xs font-semibold text-slate-700">{t('外观主题', 'Appearance')}</label>
+                  <div role="radiogroup" aria-labelledby="settings-theme-label" className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <label className="cursor-pointer">
+                      <input
+                        type="radio"
+                        name="settings-theme"
+                        value="light"
+                        checked={formData.theme === 'light'}
+                        onChange={() => save({ ...formData, theme: 'light' })}
+                        className="sr-only peer"
+                      />
+                      <div className={`p-3.5 rounded-2xl border transition-all flex items-center gap-3 peer-focus-visible:ring-2 peer-focus-visible:ring-indigo-500 peer-focus-visible:ring-offset-2 ${
                         formData.theme === 'light'
                           ? 'border-indigo-600 bg-indigo-50/40 ring-1 ring-indigo-600 shadow-2xs'
                           : 'border-slate-200 hover:border-slate-300 bg-slate-50/50'
-                      }`}
-                    >
-                      <div className="w-8 h-8 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center shrink-0">
-                        <Sun className="w-4 h-4" />
+                      }`}>
+                        <div className="w-8 h-8 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center shrink-0">
+                          <Sun className="w-4 h-4" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="font-bold text-slate-900 text-xs">Light</div>
+                          <div className="text-[11px] text-slate-500">{t('亮色模式', 'Light mode')}</div>
+                        </div>
+                        {formData.theme === 'light' && (
+                          <span aria-hidden="true" className="w-2 h-2 rounded-full bg-indigo-600" />
+                        )}
                       </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="font-bold text-slate-900 text-xs">Light</div>
-                        <div className="text-[11px] text-slate-500">{t('亮色模式', 'Light mode')}</div>
-                      </div>
-                      {formData.theme === 'light' && (
-                        <span className="w-2 h-2 rounded-full bg-indigo-600" />
-                      )}
-                    </div>
+                    </label>
 
-                    <div
-                      onClick={() => save({ ...formData, theme: 'dark' })}
-                      className={`p-3.5 rounded-2xl border cursor-pointer transition-all flex items-center gap-3 ${
+                    <label className="cursor-pointer">
+                      <input
+                        type="radio"
+                        name="settings-theme"
+                        value="dark"
+                        checked={formData.theme === 'dark'}
+                        onChange={() => save({ ...formData, theme: 'dark' })}
+                        className="sr-only peer"
+                      />
+                      <div className={`p-3.5 rounded-2xl border transition-all flex items-center gap-3 peer-focus-visible:ring-2 peer-focus-visible:ring-indigo-500 peer-focus-visible:ring-offset-2 ${
                         formData.theme === 'dark'
                           ? 'border-indigo-600 bg-indigo-50/40 ring-1 ring-indigo-600 shadow-2xs'
                           : 'border-slate-200 hover:border-slate-300 bg-slate-50/50'
-                      }`}
-                    >
-                      <div className="w-8 h-8 rounded-xl bg-slate-800 text-indigo-300 flex items-center justify-center shrink-0">
-                        <Moon className="w-4 h-4" />
+                      }`}>
+                        <div className="w-8 h-8 rounded-xl bg-slate-800 text-indigo-300 flex items-center justify-center shrink-0">
+                          <Moon className="w-4 h-4" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="font-bold text-slate-900 text-xs">Dark</div>
+                          <div className="text-[11px] text-slate-500">{t('暗色模式', 'Dark mode')}</div>
+                        </div>
+                        {formData.theme === 'dark' && (
+                          <span aria-hidden="true" className="w-2 h-2 rounded-full bg-indigo-600" />
+                        )}
                       </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="font-bold text-slate-900 text-xs">Dark</div>
-                        <div className="text-[11px] text-slate-500">{t('暗色模式', 'Dark mode')}</div>
-                      </div>
-                      {formData.theme === 'dark' && (
-                        <span className="w-2 h-2 rounded-full bg-indigo-600" />
-                      )}
-                    </div>
+                    </label>
 
-                    <div
-                      onClick={() => save({ ...formData, theme: 'system' })}
-                      className={`p-3.5 rounded-2xl border cursor-pointer transition-all flex items-center gap-3 ${
+                    <label className="cursor-pointer">
+                      <input
+                        type="radio"
+                        name="settings-theme"
+                        value="system"
+                        checked={formData.theme === 'system'}
+                        onChange={() => save({ ...formData, theme: 'system' })}
+                        className="sr-only peer"
+                      />
+                      <div className={`p-3.5 rounded-2xl border transition-all flex items-center gap-3 peer-focus-visible:ring-2 peer-focus-visible:ring-indigo-500 peer-focus-visible:ring-offset-2 ${
                         formData.theme === 'system'
                           ? 'border-indigo-600 bg-indigo-50/40 ring-1 ring-indigo-600 shadow-2xs'
                           : 'border-slate-200 hover:border-slate-300 bg-slate-50/50'
-                      }`}
-                    >
-                      <div className="w-8 h-8 rounded-xl bg-slate-100 text-slate-600 flex items-center justify-center shrink-0">
-                        <Monitor className="w-4 h-4" />
+                      }`}>
+                        <div className="w-8 h-8 rounded-xl bg-slate-100 text-slate-600 flex items-center justify-center shrink-0">
+                          <Monitor className="w-4 h-4" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="font-bold text-slate-900 text-xs">System</div>
+                          <div className="text-[11px] text-slate-500">{t('跟随系统', 'Follow system')}</div>
+                        </div>
+                        {formData.theme === 'system' && (
+                          <span aria-hidden="true" className="w-2 h-2 rounded-full bg-indigo-600" />
+                        )}
                       </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="font-bold text-slate-900 text-xs">System</div>
-                        <div className="text-[11px] text-slate-500">{t('跟随系统', 'Follow system')}</div>
-                      </div>
-                      {formData.theme === 'system' && (
-                        <span className="w-2 h-2 rounded-full bg-indigo-600" />
-                      )}
-                    </div>
+                    </label>
                   </div>
                 </div>
               </div>
@@ -597,46 +635,60 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   <h2 className="text-sm font-bold text-slate-900">{t('技能分发同步方式', 'Skill distribution')}</h2>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
-                  <div
-                    onClick={() => handleSelectDistributionMethod('copy')}
-                    className={`p-4 rounded-2xl border cursor-pointer transition-all ${
+                <div role="radiogroup" aria-label={t('技能分发同步方式', 'Skill distribution')} className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                  <label className="cursor-pointer">
+                    <input
+                      type="radio"
+                      name="settings-distribution-method"
+                      value="copy"
+                      checked={formData.distributionMethod === 'copy'}
+                      onChange={() => handleSelectDistributionMethod('copy')}
+                      className="sr-only peer"
+                    />
+                    <div className={`p-4 rounded-2xl border transition-all peer-focus-visible:ring-2 peer-focus-visible:ring-indigo-500 peer-focus-visible:ring-offset-2 ${
                       formData.distributionMethod === 'copy'
                         ? 'border-indigo-600 bg-indigo-50/40 ring-1 ring-indigo-600 shadow-2xs'
                         : 'border-slate-200 hover:border-slate-300 bg-slate-50/50'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between mb-1.5">
-                      <span className="font-bold text-slate-900 text-xs">{t('文件复制 (Copy) - 推荐', 'Copy files - Recommended')}</span>
-                      {formData.distributionMethod === 'copy' && (
-                        <span className="w-2 h-2 rounded-full bg-indigo-600" />
-                      )}
+                    }`}>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="font-bold text-slate-900 text-xs">{t('文件复制 (Copy) - 推荐', 'Copy files - Recommended')}</span>
+                        {formData.distributionMethod === 'copy' && (
+                          <span aria-hidden="true" className="w-2 h-2 rounded-full bg-indigo-600" />
+                        )}
+                      </div>
+                      <p className="text-xs text-slate-500 leading-relaxed">
+                        {t('将技能文件完整拷贝至各工具配置目录。稳定可靠，无需管理员权限或开启开发者模式。', 'Copies complete files to every tool directory. Stable and reliable without requiring administrator access.')}
+                      </p>
                     </div>
-                    <p className="text-xs text-slate-500 leading-relaxed">
-                      {t('将技能文件完整拷贝至各工具配置目录。稳定可靠，无需管理员权限或开启开发者模式。', 'Copies complete files to every tool directory. Stable and reliable without requiring administrator access.')}
-                    </p>
-                  </div>
+                  </label>
 
-                  <div
-                    onClick={() => handleSelectDistributionMethod('symlink')}
-                    className={`p-4 rounded-2xl border cursor-pointer transition-all ${
+                  <label className="cursor-pointer">
+                    <input
+                      type="radio"
+                      name="settings-distribution-method"
+                      value="symlink"
+                      checked={formData.distributionMethod === 'symlink'}
+                      onChange={() => handleSelectDistributionMethod('symlink')}
+                      className="sr-only peer"
+                    />
+                    <div className={`p-4 rounded-2xl border transition-all peer-focus-visible:ring-2 peer-focus-visible:ring-indigo-500 peer-focus-visible:ring-offset-2 ${
                       formData.distributionMethod === 'symlink'
                         ? 'border-indigo-600 bg-indigo-50/40 ring-1 ring-indigo-600 shadow-2xs'
                         : 'border-slate-200 hover:border-slate-300 bg-slate-50/50'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between mb-1.5">
-                      <span className="font-bold text-slate-900 text-xs">{t('符号链接 (Symlink)', 'Symbolic link')}</span>
-                      {formData.distributionMethod === 'symlink' && (
-                        <span className="w-2 h-2 rounded-full bg-indigo-600" />
-                      )}
+                    }`}>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="font-bold text-slate-900 text-xs">{t('符号链接 (Symlink)', 'Symbolic link')}</span>
+                        {formData.distributionMethod === 'symlink' && (
+                          <span aria-hidden="true" className="w-2 h-2 rounded-full bg-indigo-600" />
+                        )}
+                      </div>
+                      <p className="text-xs text-slate-500 leading-relaxed">
+                        {isWindowsPlatform()
+                          ? t('技能仓库作为单一事实源，建立透明符号链接。需以管理员身份运行或在系统中启用开发者模式。', 'The skill library remains the single source of truth. Requires running as Administrator or enabling Developer Mode.')
+                          : t('技能仓库作为单一事实源，建立透明符号链接。macOS / Linux 原生支持，无需额外设置。', 'The skill library remains the single source of truth. Natively supported on macOS / Linux, no extra setup required.')}
+                      </p>
                     </div>
-                    <p className="text-xs text-slate-500 leading-relaxed">
-                      {isWindowsPlatform()
-                        ? t('技能仓库作为单一事实源，建立透明符号链接。需以管理员身份运行或在系统中启用开发者模式。', 'The skill library remains the single source of truth. Requires running as Administrator or enabling Developer Mode.')
-                        : t('技能仓库作为单一事实源，建立透明符号链接。macOS / Linux 原生支持，无需额外设置。', 'The skill library remains the single source of truth. Natively supported on macOS / Linux, no extra setup required.')}
-                    </p>
-                  </div>
+                  </label>
                 </div>
               </div>
 
@@ -685,8 +737,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-2xl text-xs text-emerald-800 flex items-center gap-2">
                     <Check className="w-4 h-4 text-emerald-600" />
                     <span>
-                      技能仓库文件及链接映射已成功迁移至新目录（迁移 {migrateMutation.data.migratedCount} 项
-                      {migrateMutation.data.skippedCount > 0 ? `，跳过 ${migrateMutation.data.skippedCount} 项` : ''}）！
+                      {t(
+                        `技能仓库文件及链接映射已成功迁移至新目录（迁移 ${migrateMutation.data.migratedCount} 项${migrateMutation.data.skippedCount > 0 ? `，跳过 ${migrateMutation.data.skippedCount} 项` : ''}）！`,
+                        `Skill files and links moved successfully (${migrateMutation.data.migratedCount} moved${migrateMutation.data.skippedCount > 0 ? `, ${migrateMutation.data.skippedCount} skipped` : ''}).`,
+                      )}
                     </span>
                   </div>
                 )}
@@ -742,8 +796,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
                 <div className="flex items-center justify-between py-1">
                   <div>
-                    <div className="text-xs font-bold text-slate-800">{t('关闭时最小化到托盘', 'Minimize to tray when closing')}</div>
-                    <p className="text-[11px] text-slate-500 mt-0.5">
+                    <div id="settings-close-to-tray-label" className="text-xs font-bold text-slate-800">{t('关闭时最小化到托盘', 'Minimize to tray when closing')}</div>
+                    <p id="settings-close-to-tray-description" className="text-[11px] text-slate-500 mt-0.5">
                       {t('点击窗口关闭按钮时隐藏 SkillDock，应用继续在系统托盘运行。', 'The close button hides SkillDock while it keeps running in the system tray.')}
                     </p>
                   </div>
@@ -755,6 +809,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     }`}
                     role="switch"
                     aria-checked={formData.closeToTray}
+                    aria-labelledby="settings-close-to-tray-label"
+                    aria-describedby="settings-close-to-tray-description"
                   >
                     <span
                       className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-md transition duration-200 ${
@@ -766,8 +822,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
                 <div className="flex items-center justify-between py-1">
                   <div>
-                    <div className="text-xs font-bold text-slate-800">{t('自动检测技能更新', 'Check for updates automatically')}</div>
-                    <p className="text-[11px] text-slate-500 mt-0.5">
+                    <div id="settings-auto-update-label" className="text-xs font-bold text-slate-800">{t('自动检测技能更新', 'Check for updates automatically')}</div>
+                    <p id="settings-auto-update-description" className="text-[11px] text-slate-500 mt-0.5">
                       {t('打开应用时，若距上次检测已超过设定间隔，则在后台静默比对远端 Git 提交。', 'When opening the app, compare remote Git commits in the background after the selected interval.')}
                     </p>
                   </div>
@@ -779,6 +835,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     }`}
                     role="switch"
                     aria-checked={formData.autoCheckUpdate}
+                    aria-labelledby="settings-auto-update-label"
+                    aria-describedby="settings-auto-update-description"
                   >
                     <span
                       className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-md transition duration-200 ${
@@ -828,7 +886,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
         {/* View 2: AI 工具 (Tools Adapters) */}
         {currentSubTab === 'tools' && (
-          <ToolAdaptersView tools={tools} addToast={addToast} />
+          <ToolAdaptersView tools={tools} addToast={addToast} locale={formData.locale} />
         )}
 
         {/* View 3: 项目工程 (Projects) */}
@@ -838,6 +896,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             skills={skills}
             addToast={addToast}
             onFilterByProject={onFilterByProject}
+            locale={formData.locale}
           />
         )}
 
@@ -848,24 +907,27 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               <div className="bg-white p-6 rounded-3xl border border-slate-200/90 shadow-sm space-y-4">
               <div className="flex items-center gap-2">
                 <Brain className="w-4 h-4 text-indigo-600" />
-                <h2 className="text-sm font-bold text-slate-900">LLM 技能描述处理配置</h2>
+                <h2 className="text-sm font-bold text-slate-900">{t('LLM 技能描述处理配置', 'LLM skill description settings')}</h2>
               </div>
               <p className="text-xs text-slate-500 leading-relaxed">
-                使用 OpenAI Chat Completions 兼容接口，将已安装技能的英文描述翻译、中文描述压缩为约 20 词左右的精简简介。
+                {t(
+                  '使用 OpenAI Chat Completions 兼容接口，将已安装技能的英文描述翻译、中文描述压缩为约 20 词左右的精简简介。',
+                  'Use an OpenAI Chat Completions-compatible API to translate English skill descriptions and condense Chinese descriptions into concise summaries of about 20 words.',
+                )}
               </p>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <label className="space-y-1.5">
-                  <span className="text-xs font-semibold text-slate-700">提供商名称</span>
+                  <span className="text-xs font-semibold text-slate-700">{t('提供商名称', 'Provider name')}</span>
                   <input
                     value={llmForm.providerName}
                     onChange={(e) => updateLlmForm({ ...llmForm, providerName: e.target.value })}
-                    placeholder="DeepSeek / OpenAI / 本地模型"
+                    placeholder={t('DeepSeek / OpenAI / 本地模型', 'DeepSeek / OpenAI / local model')}
                     className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs focus:bg-white focus:ring-2 focus:ring-indigo-500/20"
                   />
                 </label>
                 <label className="space-y-1.5">
-                  <span className="text-xs font-semibold text-slate-700">模型名称</span>
+                  <span className="text-xs font-semibold text-slate-700">{t('模型名称', 'Model name')}</span>
                   <input
                     value={llmForm.model}
                     onChange={(e) => updateLlmForm({ ...llmForm, model: e.target.value })}
@@ -902,8 +964,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     type="button"
                     onClick={() => setShowKey((v) => !v)}
                     className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100"
-                    title={showKey ? '隐藏 API Key' : '显示 API Key'}
-                    aria-label={showKey ? '隐藏 API Key' : '显示 API Key'}
+                    title={showKey ? t('隐藏 API Key', 'Hide API key') : t('显示 API Key', 'Show API key')}
+                    aria-label={showKey ? t('隐藏 API Key', 'Hide API key') : t('显示 API Key', 'Show API key')}
                   >
                     {showKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
                   </button>
@@ -911,7 +973,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               </label>
 
               <div className="space-y-1.5">
-                <span className="text-xs font-semibold text-slate-700">生成简介语言</span>
+                <span className="text-xs font-semibold text-slate-700">{t('生成简介语言', 'Description language')}</span>
                 <div className="flex items-center gap-6 pt-1">
                   <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-700">
                     <input
@@ -922,7 +984,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       onChange={() => updateLlmForm({ ...llmForm, language: 'zh' })}
                       className="w-4 h-4 text-indigo-600 focus:ring-indigo-500 cursor-pointer accent-indigo-600"
                     />
-                    <span>中文简介</span>
+                    <span>{t('中文简介', 'Chinese')}</span>
                   </label>
                   <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-700">
                     <input
@@ -933,7 +995,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       onChange={() => updateLlmForm({ ...llmForm, language: 'en' })}
                       className="w-4 h-4 text-indigo-600 focus:ring-indigo-500 cursor-pointer accent-indigo-600"
                     />
-                    <span>英文简介</span>
+                    <span>{t('英文简介', 'English')}</span>
                   </label>
                 </div>
               </div>
@@ -944,9 +1006,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   onClick={saveLlm}
                   disabled={llmBusy !== null || !testPassed}
                   className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold transition-all"
-                  title={!testPassed ? '请先点击“测试连接”并测试成功后再保存' : '保存模型配置'}
+                  title={!testPassed ? t('请先点击“测试连接”并测试成功后再保存', 'Test the connection successfully before saving') : t('保存模型配置', 'Save model settings')}
                 >
-                  {llmBusy === 'save' ? '保存中...' : '保存模型配置'}
+                  {llmBusy === 'save' ? t('保存中...', 'Saving...') : t('保存模型配置', 'Save model settings')}
                 </button>
                 <button
                   type="button"
@@ -955,7 +1017,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   className="px-4 py-2.5 rounded-xl border border-slate-300 hover:bg-slate-50 disabled:opacity-60 text-slate-700 text-xs font-bold inline-flex items-center gap-1.5 transition-all"
                 >
                   <PlugZap className="w-3.5 h-3.5" />
-                  {llmBusy === 'test' ? '测试中...' : '测试连接'}
+                  {llmBusy === 'test' ? t('测试中...', 'Testing...') : t('测试连接', 'Test connection')}
                 </button>
               </div>
 
@@ -991,7 +1053,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       </span>
                     </div>
                     <p className="text-xs text-slate-500 mt-1.5 leading-relaxed">
-                      专为 AI 开发者打造的 Skills 集中管理与跨工具分发桌面客户端。
+                      {t('专为 AI 开发者打造的 Skills 集中管理与跨工具分发桌面客户端。', 'A desktop app for AI developers to manage Skills centrally and distribute them across tools.')}
                     </p>
                   </div>
                 </div>
@@ -1002,13 +1064,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-slate-300 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors shadow-2xs shrink-0"
                 >
                   <HelpCircle className="w-3.5 h-3.5 text-slate-500" />
-                  <span>配置向导</span>
+                  <span>{t('配置向导', 'Setup guide')}</span>
                 </button>
               </div>
 
               {/* 开源仓库与生态入口 */}
               <div className="space-y-3 pt-2">
-                <div className="text-xs font-bold text-slate-800">开源社区与仓库</div>
+                <div className="text-xs font-bold text-slate-800">{t('开源社区与仓库', 'Open source & repositories')}</div>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                   <div
                     onClick={() => openUrl('https://github.com/Nightrail9/SkillsDock').catch(() => {})}
@@ -1017,7 +1079,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     <div className="flex items-center justify-between mb-1.5">
                       <div className="flex items-center gap-2 font-bold text-xs text-slate-900">
                         <Github className="w-4 h-4 text-slate-800" />
-                        <span>GitHub 仓库</span>
+                        <span>{t('GitHub 仓库', 'GitHub repository')}</span>
                       </div>
                       <ExternalLink className="w-3.5 h-3.5 text-slate-400 group-hover:text-slate-600 transition-colors" />
                     </div>
@@ -1033,12 +1095,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     <div className="flex items-center justify-between mb-1.5">
                       <div className="flex items-center gap-2 font-bold text-xs text-slate-900">
                         <Bug className="w-4 h-4 text-indigo-600" />
-                        <span>问题与需求</span>
+                        <span>{t('问题与需求', 'Issues & feature requests')}</span>
                       </div>
                       <ExternalLink className="w-3.5 h-3.5 text-slate-400 group-hover:text-slate-600 transition-colors" />
                     </div>
                     <p className="text-[11px] text-slate-500 truncate">
-                      提交缺陷反馈与功能建议
+                      {t('提交缺陷反馈与功能建议', 'Report bugs and suggest features')}
                     </p>
                   </div>
 
@@ -1049,12 +1111,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     <div className="flex items-center justify-between mb-1.5">
                       <div className="flex items-center gap-2 font-bold text-xs text-slate-900">
                         <Tag className="w-4 h-4 text-emerald-600" />
-                        <span>Releases 日志</span>
+                        <span>{t('Releases 日志', 'Release notes')}</span>
                       </div>
                       <ExternalLink className="w-3.5 h-3.5 text-slate-400 group-hover:text-slate-600 transition-colors" />
                     </div>
                     <p className="text-[11px] text-slate-500 truncate">
-                      查看版本发布与变更记录
+                      {t('查看版本发布与变更记录', 'View releases and change history')}
                     </p>
                   </div>
                 </div>
@@ -1065,7 +1127,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200/70 flex items-center justify-between">
                   <div className="flex items-center gap-2 text-xs">
                     <User className="w-4 h-4 text-slate-500" />
-                    <span className="text-slate-600 font-medium">原作者 / 维护者</span>
+                    <span className="text-slate-600 font-medium">{t('原作者 / 维护者', 'Author / maintainer')}</span>
                   </div>
                   <span
                     onClick={() => openUrl('https://github.com/Nightrail9').catch(() => {})}
@@ -1079,7 +1141,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200/70 flex items-center justify-between">
                   <div className="flex items-center gap-2 text-xs">
                     <FileText className="w-4 h-4 text-slate-500" />
-                    <span className="text-slate-600 font-medium">开源许可证</span>
+                    <span className="text-slate-600 font-medium">{t('开源许可证', 'Open-source license')}</span>
                   </div>
                   <span
                     onClick={() => openUrl('https://github.com/Nightrail9/SkillsDock/blob/main/LICENSE').catch(() => {})}
@@ -1095,10 +1157,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200/80 text-xs text-slate-600 space-y-1.5 leading-relaxed">
                 <div className="font-bold text-slate-800 flex items-center gap-1.5">
                   <ShieldCheck className="w-4 h-4 text-emerald-600" />
-                  <span>本地数据主权保障</span>
+                  <span>{t('本地数据主权保障', 'Your data stays local')}</span>
                 </div>
                 <p>
-                  SkillsDock 遵循 Local-First 原则，无云端服务器中转，无用户隐私数据上传，零遥测打点。所有配置文件、技能仓库、项目工程映射与工具符号链接仅保存在您的个人电脑中。
+                  {t(
+                    'SkillsDock 遵循 Local-First 原则，无云端服务器中转，无用户隐私数据上传，零遥测打点。所有配置文件、技能仓库、项目工程映射与工具符号链接仅保存在您的个人电脑中。',
+                    'SkillsDock is local-first: no cloud relay, private data uploads, or telemetry. Settings, the skill library, project mappings, and tool symlinks stay on your computer.',
+                  )}
                 </p>
               </div>
             </div>
