@@ -332,9 +332,9 @@ export const DiscoveryView: React.FC<DiscoveryViewProps> = ({
     : [];
 
   return (
-    <div className="flex-1 overflow-y-auto p-8 space-y-6">
+    <div className={`flex-1 min-h-0 p-8 space-y-6 ${mainMode === 'github' ? 'flex flex-col overflow-hidden' : 'overflow-y-auto'}`}>
       {/* Compact Top Action Toolbar */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-200/80">
+      <div className="flex shrink-0 flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-200/80">
         {mainMode === 'market' ? (
           <div className="relative flex-1 max-w-md">
             <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-2.5" />
@@ -494,9 +494,9 @@ export const DiscoveryView: React.FC<DiscoveryViewProps> = ({
 
       {/* MODE 2: Github 仓库导入（自动探测仓库内全部技能 + 指定子目录直装） */}
       {mainMode === 'github' && (
-        <div className="max-w-3xl mx-auto space-y-6">
+        <div className="max-w-3xl mx-auto w-full min-h-0 flex-1 flex flex-col">
           {/* Git 仓库导入 */}
-          <div className="bg-white p-6 rounded-2xl border border-slate-200/90 shadow-sm space-y-5">
+          <div className="bg-white p-6 rounded-2xl border border-slate-200/90 shadow-sm min-h-0 flex-1 flex flex-col gap-5 overflow-hidden">
               <div>
                 <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
                   <Github className="w-4 h-4 text-slate-800" />
@@ -507,7 +507,7 @@ export const DiscoveryView: React.FC<DiscoveryViewProps> = ({
                 </p>
               </div>
 
-              <form onSubmit={handleGitRepoSubmit} className="space-y-4 text-xs">
+              <form onSubmit={handleGitRepoSubmit} className="shrink-0 space-y-4 text-xs">
                 <div>
                   <label className="block font-semibold text-slate-700 mb-1.5">
                     GitHub 仓库路径 (owner/repo 或 HTTPS URL) <span className="text-rose-500">*</span>
@@ -582,7 +582,7 @@ export const DiscoveryView: React.FC<DiscoveryViewProps> = ({
 
               {/* 探测结果：仓库内全部可安装技能清单 */}
               {probeRepoMutation.isError && (
-                <div className="p-3.5 rounded-2xl border text-xs flex items-start gap-2.5 bg-rose-50 border-rose-200/80 text-rose-800 whitespace-pre-wrap">
+                <div className="p-3.5 rounded-2xl border text-xs flex items-start gap-2.5 bg-rose-50 border-rose-200/80 text-rose-800 whitespace-pre-wrap shrink-0">
                   <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
                   <span>仓库探测失败：{errorToString(probeRepoMutation.error)}</span>
                 </div>
@@ -595,7 +595,7 @@ export const DiscoveryView: React.FC<DiscoveryViewProps> = ({
                     请确认仓库内容或改用上方「技能子目录」直接指定安装路径。
                   </div>
                 ) : (
-                  <div className="space-y-2.5">
+                  <div className="min-h-0 flex-1 flex flex-col space-y-2.5 overflow-hidden">
                     <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-1">
                       <div className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
                         <PackageCheck className="w-4 h-4 text-emerald-600" />
@@ -635,60 +635,62 @@ export const DiscoveryView: React.FC<DiscoveryViewProps> = ({
                         </div>
                       )}
                     </div>
-                    {probedResult.skills.map((skill) => {
-                      const alreadyInstalled = installedRepoDirs.has(
-                        `${probedRepo.owner}/${probedRepo.name}:${skill.name}`.toLowerCase(),
-                      );
-                      const selectionKey = skill.subpath || skill.name;
-                      return (
-                        <div
-                          key={selectionKey}
-                          className="p-3.5 bg-slate-50 rounded-xl border border-slate-200/80 flex items-center justify-between gap-3"
-                        >
-                          <div className="flex items-start gap-3 min-w-0 flex-1">
-                            <input
-                              type="checkbox"
-                              aria-label={`选择技能 ${skill.displayName || skill.name}`}
-                              checked={!alreadyInstalled && selectedProbedSkillKeys.has(selectionKey)}
-                              disabled={alreadyInstalled}
-                              onChange={() => handleToggleProbedSkill(skill)}
-                              className="mt-0.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 disabled:opacity-40"
-                            />
-                            <div className="min-w-0 flex-1">
-                              <div className="text-xs font-bold text-slate-800 truncate">
-                                {skill.displayName || skill.name}
-                              </div>
-                              <div className="text-[11px] text-slate-500 line-clamp-2">
-                                {skill.description || ''}
-                              </div>
-                              <div className="text-[10px] text-slate-400 font-mono mt-0.5 truncate">
-                                {skill.subpath || '（仓库根目录）'}
+                    <div className="min-h-0 flex-1 overflow-y-auto space-y-2.5 pr-1">
+                      {probedResult.skills.map((skill) => {
+                        const alreadyInstalled = installedRepoDirs.has(
+                          `${probedRepo.owner}/${probedRepo.name}:${skill.name}`.toLowerCase(),
+                        );
+                        const selectionKey = skill.subpath || skill.name;
+                        return (
+                          <div
+                            key={selectionKey}
+                            className="p-3.5 bg-slate-50 rounded-xl border border-slate-200/80 flex items-center justify-between gap-3"
+                          >
+                            <div className="flex items-start gap-3 min-w-0 flex-1">
+                              <input
+                                type="checkbox"
+                                aria-label={`选择技能 ${skill.displayName || skill.name}`}
+                                checked={!alreadyInstalled && selectedProbedSkillKeys.has(selectionKey)}
+                                disabled={alreadyInstalled}
+                                onChange={() => handleToggleProbedSkill(skill)}
+                                className="mt-0.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 disabled:opacity-40"
+                              />
+                              <div className="min-w-0 flex-1">
+                                <div className="text-xs font-bold text-slate-800 truncate">
+                                  {skill.displayName || skill.name}
+                                </div>
+                                <div className="text-[11px] text-slate-500 line-clamp-2">
+                                  {skill.description || ''}
+                                </div>
+                                <div className="text-[10px] text-slate-400 font-mono mt-0.5 truncate">
+                                  {skill.subpath || '（仓库根目录）'}
+                                </div>
                               </div>
                             </div>
+                            {alreadyInstalled ? (
+                              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200 shrink-0">
+                                <Check className="w-3 h-3" />
+                                <span>已安装</span>
+                              </span>
+                            ) : (
+                              <button
+                                onClick={() =>
+                                  openGitHubInstall(
+                                    probedRepo.owner,
+                                    probedRepo.name,
+                                    probedResult.branch,
+                                    skill,
+                                  )
+                                }
+                                className="px-3 py-1.5 rounded-lg text-[11px] font-semibold text-white bg-indigo-600 hover:bg-indigo-700 transition-colors shrink-0"
+                              >
+                                安装
+                              </button>
+                            )}
                           </div>
-                          {alreadyInstalled ? (
-                            <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200 shrink-0">
-                              <Check className="w-3 h-3" />
-                              <span>已安装</span>
-                            </span>
-                          ) : (
-                            <button
-                              onClick={() =>
-                                openGitHubInstall(
-                                  probedRepo.owner,
-                                  probedRepo.name,
-                                  probedResult.branch,
-                                  skill,
-                                )
-                              }
-                              className="px-3 py-1.5 rounded-lg text-[11px] font-semibold text-white bg-indigo-600 hover:bg-indigo-700 transition-colors shrink-0"
-                            >
-                              安装
-                            </button>
-                          )}
-                        </div>
-                      );
-                    })}
+                        );
+                      })}
+                    </div>
                   </div>
                 )
               )}

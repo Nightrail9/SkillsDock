@@ -147,29 +147,27 @@ export default function App() {
     setDescBusy(true);
     setGeneratingDescSkillIds((prev) => new Set([...prev, ...targetIds]));
 
-    await Promise.all(
-      targetIds.map(async (id) => {
-        const skill = skillsById.get(id);
-        try {
-          const result = await settingsApi.processSkillDescriptions([id], apiKey, language);
-          const failure = result.failures[0];
-          if (failure) {
-            addToast('error', `「${skill?.displayName ?? id}」简介生成失败`, failure.reason);
-          } else if (result.succeeded > 0) {
-            addToast('success', '简介已生成', `已成功生成「${skill?.displayName ?? id}」的简介`);
-          }
-          await queryClient.invalidateQueries({ queryKey: APP_STATE_KEY });
-        } catch (err) {
-          addToast('error', `「${skill?.displayName ?? id}」简介生成失败`, errorToString(err));
-        } finally {
-          setGeneratingDescSkillIds((prev) => {
-            const next = new Set(prev);
-            next.delete(id);
-            return next;
-          });
+    for (const id of targetIds) {
+      const skill = skillsById.get(id);
+      try {
+        const result = await settingsApi.processSkillDescriptions([id], apiKey, language);
+        const failure = result.failures[0];
+        if (failure) {
+          addToast('error', `「${skill?.displayName ?? id}」简介生成失败`, failure.reason);
+        } else if (result.succeeded > 0) {
+          addToast('success', '简介已生成', `已成功生成「${skill?.displayName ?? id}」的简介`);
         }
-      }),
-    );
+        await queryClient.invalidateQueries({ queryKey: APP_STATE_KEY });
+      } catch (err) {
+        addToast('error', `「${skill?.displayName ?? id}」简介生成失败`, errorToString(err));
+      } finally {
+        setGeneratingDescSkillIds((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+      }
+    }
     setDescBusy(false);
   };
   useEffect(() => {
