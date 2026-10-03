@@ -89,14 +89,30 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern latest.json --dir "$RUNNER_TEMP"
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > "$RUNNER_TEMP/release.json"
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" > "$RUNNER_TEMP/releases.json"
           node -e '
             const fs = require("node:fs");
-            const manifestPath = `${process.env.RUNNER_TEMP}/latest.json`;
-            const releasePath = `${process.env.RUNNER_TEMP}/release.json`;
-            const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-            const release = JSON.parse(fs.readFileSync(releasePath, "utf8"));
+            const { spawnSync } = require("node:child_process");
+            const releasePath = `${process.env.RUNNER_TEMP}/releases.json`;
+            const releases = JSON.parse(fs.readFileSync(releasePath, "utf8"));
+            const release = releases.find((item) => item.tag_name === process.env.RELEASE_TAG && item.draft);
+            if (!release) {
+              throw new Error(`Draft release ${process.env.RELEASE_TAG} was not found`);
+            }
+
+            const manifestAsset = release.assets.find((asset) => asset.name === "latest.json");
+            if (!manifestAsset) {
+              throw new Error(`Draft release ${process.env.RELEASE_TAG} has no latest.json asset`);
+            }
+            const downloaded = spawnSync(
+              "gh",
+              ["api", "-H", "Accept: application/octet-stream", `repos/${process.env.GITHUB_REPOSITORY}/releases/assets/${manifestAsset.id}`],
+              { encoding: "utf8", env: process.env, maxBuffer: 16 * 1024 * 1024 },
+            );
+            if (downloaded.status !== 0) {
+              throw new Error(`Could not download latest.json: ${downloaded.stderr}`);
+            }
+            const manifest = JSON.parse(downloaded.stdout);
             const assetsById = new Map(release.assets.map((asset) => [String(asset.id), asset]));
             let rewritten = 0;
 
@@ -108,14 +124,17 @@ jobs:
               if (!asset?.browser_download_url) {
                 throw new Error(`Release asset ${match[1]} has no public download URL`);
               }
-              platform.url = asset.browser_download_url;
+              platform.url = asset.browser_download_url.replace(
+                /\/download\/untagged-[^/]+\//,
+                `/download/${process.env.RELEASE_TAG}/`,
+              );
               rewritten += 1;
             }
 
             if (rewritten === 0) {
               throw new Error("No GitHub API asset URLs found in latest.json");
             }
-            fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+            fs.writeFileSync(`${process.env.RUNNER_TEMP}/latest.json`, `${JSON.stringify(manifest, null, 2)}\n`);
           '
           gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/latest.json" --repo "$GITHUB_REPOSITORY" --clobber
 
