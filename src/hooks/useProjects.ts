@@ -39,14 +39,21 @@ export function useAssignSkillProjects() {
 export function useScheduleSkills() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ skillIds, projectIds, toolIds }: {
+    mutationFn: ({ skillIds, targetScope, projectId, toolIds }: {
       skillIds: string[];
-      projectIds: string[];
+      targetScope: 'global' | 'project';
+      projectId?: string;
       toolIds: ToolId[];
     }) =>
-      runSequentialBulkAction(skillIds, (skillId) =>
-        projectsApi.scheduleSkill(skillId, projectIds, toolIds),
-      ),
+      runSequentialBulkAction(skillIds, (skillId) => {
+        if (targetScope === 'global') {
+          return projectsApi.scheduleSkillGlobally(skillId, toolIds);
+        }
+        if (!projectId) {
+          throw new Error('A project must be selected for project distribution.');
+        }
+        return projectsApi.scheduleSkill(skillId, [projectId], toolIds);
+      }),
     onSettled: () => queryClient.invalidateQueries({ queryKey: APP_STATE_KEY }),
   });
 }

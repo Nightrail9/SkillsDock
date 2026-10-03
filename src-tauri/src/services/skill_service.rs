@@ -2772,8 +2772,8 @@ impl SkillService {
         Ok(Some(record))
     }
 
-    /// 导入本地技能目录（必须含 SKILL.md；识别 .git 里的 GitHub 来源）
-    /// git 识别失败时，按目录名在 skills.sh 注册表精确匹配来源（联网；失败/无匹配 → 纯本地）。
+    /// git 来源可能是用户维护的镜像；优先按目录名 / SKILL.md 技能名匹配 skills.sh 原作者仓库。
+    /// 注册表未命中时才沿用本地 git 来源；联网失败则保持本地来源。
     /// 目录名未命中时，再用 SKILL.md frontmatter 的技能名匹配一次（安装目录名可能是仓库名而非技能注册名）。
     /// 返回 (repo "owner/repo", registry_id)。
     async fn match_registry_source(
@@ -2879,15 +2879,11 @@ impl SkillService {
 
         // git 来源识别（全局/项目级分支共用）
         let git_info = git_detect::detect_github_source(&source_dir);
-        // git 识别失败时，联网在 skills.sh 注册表按目录名（必要时退回 SKILL.md 技能名）精确匹配原作者仓库（失败保持纯本地）
-        let registry_match = if git_info.is_none() {
-            let skill_name = Self::parse_skill_metadata_static(&source_dir.join("SKILL.md"))
-                .ok()
-                .and_then(|m| m.name);
-            Self::match_registry_source(&install_name, skill_name.as_deref()).await
-        } else {
-            None
-        };
+        // 即使检测到 GitHub fork，也优先尝试匹配技能注册表中的原作者仓库。
+        let skill_name = Self::parse_skill_metadata_static(&source_dir.join("SKILL.md"))
+            .ok()
+            .and_then(|metadata| metadata.name);
+        let registry_match = Self::match_registry_source(&install_name, skill_name.as_deref()).await;
 
         // 项目级作用域：复制到项目技能目录并入库
         if scope == Some(SKILL_SCOPE_PROJECT) {
@@ -2905,30 +2901,37 @@ impl SkillService {
                     } else {
                         "local".to_string()
                     },
-                    source_repo: git_info
+                    source_repo: registry_match
                         .as_ref()
-                        .map(|i| i.repo.clone())
-                        .or_else(|| registry_match.as_ref().map(|(repo, _)| repo.clone())),
-                    source_branch: git_info.as_ref().and_then(|i| i.branch.clone()),
+                        .map(|(repo, _)| repo.clone())
+                        .or_else(|| git_info.as_ref().map(|info| info.repo.clone())),
+                    source_branch: if registry_match.is_some() {
+                        None
+                    } else {
+                        git_info.as_ref().and_then(|info| info.branch.clone())
+                    },
                     source_subpath: None,
-                    source_author: git_info
+                    source_author: registry_match
                         .as_ref()
-                        .and_then(|i| i.repo.split('/').next().map(|s| s.to_string()))
+                        .and_then(|(repo, _)| repo.split('/').next().map(str::to_string))
                         .or_else(|| {
-                            registry_match
+                            git_info
                                 .as_ref()
-                                .and_then(|(repo, _)| repo.split('/').next().map(|s| s.to_string()))
+                                .and_then(|info| info.repo.split('/').next().map(str::to_string))
                         }),
                     source_registry_id: registry_match
                         .as_ref()
                         .map(|(_, registry_id)| registry_id.clone()),
-                    source_url: git_info.as_ref().map(|i| i.url.clone()).or_else(|| {
-                        registry_match
-                            .as_ref()
-                            .map(|(repo, _)| format!("https://github.com/{repo}"))
-                    }),
-                    source_github_detected: git_info.is_some(),
-                    current_commit: git_info.as_ref().and_then(|i| i.commit.clone()),
+                    source_url: registry_match
+                        .as_ref()
+                        .map(|(repo, _)| format!("https://github.com/{repo}"))
+                        .or_else(|| git_info.as_ref().map(|info| info.url.clone())),
+                    source_github_detected: git_info.is_some() && registry_match.is_none(),
+                    current_commit: if registry_match.is_some() {
+                        None
+                    } else {
+                        git_info.as_ref().and_then(|info| info.commit.clone())
+                    },
                     display_name: None,
                     input_description: None,
                     tags: vec![],
@@ -2974,9 +2977,9 @@ impl SkillService {
 
         let now = chrono::Utc::now().timestamp();
         let record = SkillRecord {
-            id: match (&git_info, &registry_match) {
-                (Some(info), _) => format!("{}:{}", info.repo, install_name),
-                (None, Some((repo, _))) => format!("{}:{}", repo, install_name),
+            id: match (&registry_match, &git_info) {
+                (Some((repo, _)), _) => format!("{repo}:{install_name}"),
+                (None, Some(info)) => format!("{}:{install_name}", info.repo),
                 (None, None) => format!("local:{install_name}"),
             },
             name: name.clone(),
@@ -2995,30 +2998,37 @@ impl SkillService {
             } else {
                 "local".to_string()
             },
-            source_repo: git_info
+            source_repo: registry_match
                 .as_ref()
-                .map(|i| i.repo.clone())
-                .or_else(|| registry_match.as_ref().map(|(repo, _)| repo.clone())),
-            source_branch: git_info.as_ref().and_then(|i| i.branch.clone()),
+                .map(|(repo, _)| repo.clone())
+                .or_else(|| git_info.as_ref().map(|info| info.repo.clone())),
+            source_branch: if registry_match.is_some() {
+                None
+            } else {
+                git_info.as_ref().and_then(|info| info.branch.clone())
+            },
             source_subpath: None,
-            source_author: git_info
+            source_author: registry_match
                 .as_ref()
-                .and_then(|i| i.repo.split('/').next().map(|s| s.to_string()))
+                .and_then(|(repo, _)| repo.split('/').next().map(str::to_string))
                 .or_else(|| {
-                    registry_match
+                    git_info
                         .as_ref()
-                        .and_then(|(repo, _)| repo.split('/').next().map(|s| s.to_string()))
+                        .and_then(|info| info.repo.split('/').next().map(str::to_string))
                 }),
             source_registry_id: registry_match
                 .as_ref()
                 .map(|(_, registry_id)| registry_id.clone()),
-            source_url: git_info.as_ref().map(|i| i.url.clone()).or_else(|| {
-                registry_match
-                    .as_ref()
-                    .map(|(repo, _)| format!("https://github.com/{repo}"))
-            }),
-            source_github_detected: git_info.is_some(),
-            current_commit: git_info.as_ref().and_then(|i| i.commit.clone()),
+            source_url: registry_match
+                .as_ref()
+                .map(|(repo, _)| format!("https://github.com/{repo}"))
+                .or_else(|| git_info.as_ref().map(|info| info.url.clone())),
+            source_github_detected: git_info.is_some() && registry_match.is_none(),
+            current_commit: if registry_match.is_some() {
+                None
+            } else {
+                git_info.as_ref().and_then(|info| info.commit.clone())
+            },
             latest_commit: None,
             has_update: false,
             content_hash,
@@ -3733,6 +3743,7 @@ impl SkillService {
             .zip(updated.project_path.as_deref());
         match db.set_skill_deployment(
             skill_id,
+            SKILL_SCOPE_PROJECT,
             &updated.project_ids,
             primary,
             &updated.enabled_tools,
@@ -3759,6 +3770,148 @@ impl SkillService {
                 return Err(error).context("Failed to save skill project assignments");
             }
         }
+        Ok(())
+    }
+
+    /// Moves a pending skill to global scope and distributes it to selected tools.
+    pub fn schedule_skill_globally(
+        db: &Database,
+        skill_id: &str,
+        tool_ids: Vec<String>,
+    ) -> Result<()> {
+        let _guard = state_write_guard();
+        let record = db
+            .get_skill(skill_id)?
+            .ok_or_else(|| anyhow!("Skill not found: {skill_id}"))?;
+        if tool_ids.is_empty() {
+            return Err(anyhow!("At least one tool must be selected"));
+        }
+
+        let tools = db.list_tool_adapters()?;
+        let mut selected_tools = Vec::new();
+        let mut seen_tools = HashSet::new();
+        for id in tool_ids {
+            if !seen_tools.insert(id.clone()) {
+                continue;
+            }
+            let tool = tools
+                .iter()
+                .find(|tool| tool.id == id)
+                .ok_or_else(|| anyhow!("Tool not found: {id}"))?;
+            if !tool.is_enabled {
+                return Err(anyhow!("Tool is disabled: {id}"));
+            }
+            selected_tools.push(tool);
+        }
+
+        let project_paths = if record.is_project() {
+            Self::assigned_project_paths(db, &record)?
+        } else {
+            Vec::new()
+        };
+        let library = Self::get_library_dir(db)?;
+        let global_storage = library.join(Self::require_valid_directory(&record.directory)?);
+        let source = Self::skill_storage_dir(db, &record)?;
+        let copied_to_global_storage = record.is_project() && source != global_storage;
+        if copied_to_global_storage {
+            if global_storage.exists() || Self::is_symlink(&global_storage) {
+                return Err(anyhow!(
+                    "Cannot distribute skill {} globally because {} already exists",
+                    record.directory,
+                    global_storage.display()
+                ));
+            }
+            Self::replace_dest_with_copy(&source, &global_storage, &record.directory)
+                .context("Failed to move skill payload into the global library")?;
+        }
+
+        let mut global_record = record.clone();
+        global_record.scope = SKILL_SCOPE_GLOBAL.to_string();
+        global_record.project_id = None;
+        global_record.project_path = None;
+        global_record.project_ids.clear();
+        global_record.enabled_tools = selected_tools.iter().map(|tool| tool.id.clone()).collect();
+
+        let mut deployed_global = Vec::new();
+        let mut removed_project = Vec::new();
+
+        let deployment = (|| -> Result<()> {
+            for tool in &selected_tools {
+                let root = Self::tool_root(tool)?;
+                let destination = root.join(&record.directory);
+                if (destination.exists() || Self::is_symlink(&destination))
+                    && !Self::paths_alias(&global_storage, &destination)
+                {
+                    return Err(anyhow!(
+                        "Global skill destination already exists: {}",
+                        destination.display()
+                    ));
+                }
+                deployed_global.push((*tool, root.clone()));
+                Self::deploy_to_tool_at(db, &global_record, tool, &root)?;
+            }
+
+            if record.is_project() {
+                for tool_id in &record.enabled_tools {
+                    let tool = tools
+                        .iter()
+                        .find(|tool| &tool.id == tool_id)
+                        .ok_or_else(|| anyhow!("Tool not found: {tool_id}"))?;
+                    for path in &project_paths {
+                        if let Some(root) = Self::project_tool_root(tool, path) {
+                            removed_project.push((tool, root.clone()));
+                            Self::remove_from_tool_at(db, &record, tool, &root)?;
+                        }
+                    }
+                }
+            }
+
+            if !db.set_skill_deployment(
+                skill_id,
+                SKILL_SCOPE_GLOBAL,
+                &[],
+                None,
+                &global_record.enabled_tools,
+            )? {
+                return Err(anyhow!("Skill not found: {skill_id}"));
+            }
+            Ok(())
+        })();
+
+        if let Err(error) = deployment {
+            for (tool, root) in removed_project.iter().rev() {
+                if let Err(restore_error) = Self::deploy_to_tool_at(db, &record, tool, root) {
+                    log::error!(
+                        "Failed to restore project skill {} for tool {} at {}: {restore_error:#}",
+                        record.id,
+                        tool.id,
+                        root.display()
+                    );
+                }
+            }
+            for (tool, root) in deployed_global.iter().rev() {
+                if let Err(rollback_error) =
+                    Self::remove_from_tool_at(db, &global_record, tool, root)
+                {
+                    log::error!(
+                        "Failed to roll back global skill {} for tool {} at {}: {rollback_error:#}",
+                        record.id,
+                        tool.id,
+                        root.display()
+                    );
+                }
+            }
+            if copied_to_global_storage {
+                if let Err(cleanup_error) = Self::remove_path(&global_storage) {
+                    log::error!(
+                        "Failed to remove staged global skill payload {}: {cleanup_error:#}",
+                        global_storage.display()
+                    );
+                }
+            }
+            return Err(error).context("Failed to distribute skill globally");
+        }
+
         Ok(())
     }
 
@@ -4422,14 +4575,11 @@ impl SkillService {
             // Only inspect the skill directory's own .git directory. Looking above it could
             // incorrectly attribute every project skill to the host project's repository.
             let git_info = git_detect::detect_github_source(&source);
-            let registry_match = if git_info.is_none() {
-                let skill_name = Self::parse_skill_metadata_static(&source.join("SKILL.md"))
-                    .ok()
-                    .and_then(|metadata| metadata.name);
-                Self::match_registry_source(&install_name, skill_name.as_deref()).await
-            } else {
-                None
-            };
+            let skill_name = Self::parse_skill_metadata_static(&source.join("SKILL.md"))
+                .ok()
+                .and_then(|metadata| metadata.name);
+            let registry_match =
+                Self::match_registry_source(&install_name, skill_name.as_deref()).await;
             prepared.push((
                 selection,
                 install_name,
@@ -4485,37 +4635,44 @@ impl SkillService {
                 &install_name,
                 ProjectInstallMeta {
                     directory: install_name.clone(),
-                    source_type: if git_info.is_some() {
-                        "github".to_string()
-                    } else if registry_match.is_some() {
+                    source_type: if registry_match.is_some() {
                         "skills_sh".to_string()
+                    } else if git_info.is_some() {
+                        "github".to_string()
                     } else {
                         "unknown".to_string()
                     },
-                    source_repo: git_info
+                    source_repo: registry_match
                         .as_ref()
-                        .map(|info| info.repo.clone())
-                        .or_else(|| registry_match.as_ref().map(|(repo, _)| repo.clone())),
-                    source_branch: git_info.as_ref().and_then(|info| info.branch.clone()),
+                        .map(|(repo, _)| repo.clone())
+                        .or_else(|| git_info.as_ref().map(|info| info.repo.clone())),
+                    source_branch: if registry_match.is_some() {
+                        None
+                    } else {
+                        git_info.as_ref().and_then(|info| info.branch.clone())
+                    },
                     source_subpath: None,
-                    source_author: git_info
+                    source_author: registry_match
                         .as_ref()
-                        .and_then(|info| info.repo.split('/').next().map(str::to_string))
+                        .and_then(|(repo, _)| repo.split('/').next().map(str::to_string))
                         .or_else(|| {
-                            registry_match
+                            git_info
                                 .as_ref()
-                                .and_then(|(repo, _)| repo.split('/').next().map(str::to_string))
+                                .and_then(|info| info.repo.split('/').next().map(str::to_string))
                         }),
                     source_registry_id: registry_match
                         .as_ref()
                         .map(|(_, registry_id)| registry_id.clone()),
-                    source_url: git_info.as_ref().map(|info| info.url.clone()).or_else(|| {
-                        registry_match
-                            .as_ref()
-                            .map(|(repo, _)| format!("https://github.com/{repo}"))
-                    }),
-                    source_github_detected: git_info.is_some(),
-                    current_commit: git_info.as_ref().and_then(|info| info.commit.clone()),
+                    source_url: registry_match
+                        .as_ref()
+                        .map(|(repo, _)| format!("https://github.com/{repo}"))
+                        .or_else(|| git_info.as_ref().map(|info| info.url.clone())),
+                    source_github_detected: git_info.is_some() && registry_match.is_none(),
+                    current_commit: if registry_match.is_some() {
+                        None
+                    } else {
+                        git_info.as_ref().and_then(|info| info.commit.clone())
+                    },
                     display_name: None,
                     input_description: None,
                     tags: vec![],
@@ -4577,14 +4734,11 @@ impl SkillService {
                 };
 
                 let git_info = git_detect::detect_github_source(&source);
-                let registry_match = if git_info.is_none() {
-                    let skill_name = Self::parse_skill_metadata_static(&source.join("SKILL.md"))
-                        .ok()
-                        .and_then(|m| m.name);
-                    Self::match_registry_source(&dir_name, skill_name.as_deref()).await
-                } else {
-                    None
-                };
+                let skill_name = Self::parse_skill_metadata_static(&source.join("SKILL.md"))
+                    .ok()
+                    .and_then(|metadata| metadata.name);
+                let registry_match =
+                    Self::match_registry_source(&dir_name, skill_name.as_deref()).await;
                 prepared.push((
                     selection,
                     dir_name,
@@ -4648,9 +4802,9 @@ impl SkillService {
 
             let now = chrono::Utc::now().timestamp();
             let record = SkillRecord {
-                id: match (&git_info, &registry_match) {
-                    (Some(info), _) => format!("{}:{}", info.repo, dir_name),
-                    (None, Some((repo, _))) => format!("{}:{}", repo, dir_name),
+                id: match (&registry_match, &git_info) {
+                    (Some((repo, _)), _) => format!("{repo}:{dir_name}"),
+                    (None, Some(info)) => format!("{}:{dir_name}", info.repo),
                     (None, None) => format!("local:{dir_name}"),
                 },
                 name: name.clone(),
@@ -4669,30 +4823,37 @@ impl SkillService {
                 } else {
                     "local".to_string()
                 },
-                source_repo: git_info
+                source_repo: registry_match
                     .as_ref()
-                    .map(|i| i.repo.clone())
-                    .or_else(|| registry_match.as_ref().map(|(repo, _)| repo.clone())),
-                source_branch: git_info.as_ref().and_then(|i| i.branch.clone()),
+                    .map(|(repo, _)| repo.clone())
+                    .or_else(|| git_info.as_ref().map(|info| info.repo.clone())),
+                source_branch: if registry_match.is_some() {
+                    None
+                } else {
+                    git_info.as_ref().and_then(|info| info.branch.clone())
+                },
                 source_subpath: None,
-                source_author: git_info
+                source_author: registry_match
                     .as_ref()
-                    .and_then(|i| i.repo.split('/').next().map(|s| s.to_string()))
+                    .and_then(|(repo, _)| repo.split('/').next().map(str::to_string))
                     .or_else(|| {
-                        registry_match
+                        git_info
                             .as_ref()
-                            .and_then(|(repo, _)| repo.split('/').next().map(|s| s.to_string()))
+                            .and_then(|info| info.repo.split('/').next().map(str::to_string))
                     }),
                 source_registry_id: registry_match
                     .as_ref()
                     .map(|(_, registry_id)| registry_id.clone()),
-                source_url: git_info.as_ref().map(|i| i.url.clone()).or_else(|| {
-                    registry_match
-                        .as_ref()
-                        .map(|(repo, _)| format!("https://github.com/{repo}"))
-                }),
-                source_github_detected: git_info.is_some(),
-                current_commit: git_info.as_ref().and_then(|i| i.commit.clone()),
+                source_url: registry_match
+                    .as_ref()
+                    .map(|(repo, _)| format!("https://github.com/{repo}"))
+                    .or_else(|| git_info.as_ref().map(|info| info.url.clone())),
+                source_github_detected: git_info.is_some() && registry_match.is_none(),
+                current_commit: if registry_match.is_some() {
+                    None
+                } else {
+                    git_info.as_ref().and_then(|info| info.commit.clone())
+                },
                 latest_commit: None,
                 has_update: false,
                 content_hash,
@@ -6427,6 +6588,109 @@ mod tests {
             SkillService::project_tool_root(&selected, &project_path.display().to_string())
                 .unwrap();
         assert!(selected_project_root.join("scheduled/SKILL.md").is_file());
+        assert!(!other_root.join("scheduled").exists());
+    }
+
+    #[test]
+    fn scheduling_project_skill_globally_clears_project_scope() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("library");
+        let db = memory_db_with_library(&library);
+        let home = config::get_home_dir().unwrap();
+        let tool_home = tempfile::tempdir_in(&home).unwrap();
+        let selected = test_tool_under_home("selected-tool", tool_home.path(), ".selected/skills");
+        let other = test_tool_under_home("other-tool", tool_home.path(), ".other/skills");
+        db.insert_tool_adapter(&selected, 0).unwrap();
+        db.insert_tool_adapter(&other, 0).unwrap();
+
+        let project_path = temp.path().join("project");
+        fs::create_dir_all(&project_path).unwrap();
+        let project_id = db
+            .add_skill_project("project", &project_path.display().to_string())
+            .unwrap()
+            .to_string();
+        let source = library
+            .join("projects")
+            .join(SkillService::project_storage_namespace(
+                &project_path.display().to_string(),
+            ))
+            .join("scheduled");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("SKILL.md"), "# scheduled").unwrap();
+
+        let skill_id = "owner/repo:scheduled-project";
+        let mut record = test_skill_record(
+            skill_id,
+            "scheduled",
+            SKILL_SCOPE_PROJECT,
+            Some(&project_path.display().to_string()),
+        );
+        record.project_id = Some(project_id.clone());
+        record.project_ids = vec![project_id];
+        record.enabled_tools = vec!["selected-tool".to_string()];
+        db.save_skill(&record).unwrap();
+        let project_tool_root =
+            SkillService::project_tool_root(&selected, &project_path.display().to_string())
+                .unwrap();
+        SkillService::deploy_to_tool_at(&db, &record, &selected, &project_tool_root).unwrap();
+
+        SkillService::schedule_skill_globally(&db, skill_id, vec!["selected-tool".to_string()])
+            .unwrap();
+
+        let saved = db.get_skill(skill_id).unwrap().unwrap();
+        assert_eq!(saved.scope, SKILL_SCOPE_GLOBAL);
+        assert!(saved.project_ids.is_empty());
+        assert!(saved.project_id.is_none());
+        assert_eq!(saved.enabled_tools, vec!["selected-tool"]);
+        assert!(library.join("scheduled/SKILL.md").is_file());
+        assert!(selected
+            .current_path
+            .parse::<std::path::PathBuf>()
+            .unwrap()
+            .join("scheduled/SKILL.md")
+            .is_file());
+        assert!(!project_tool_root.join("scheduled").exists());
+        assert!(!other
+            .current_path
+            .parse::<std::path::PathBuf>()
+            .unwrap()
+            .join("scheduled")
+            .exists());
+    }
+
+    #[test]
+    fn scheduling_global_pending_skill_deploys_only_selected_tools() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("library");
+        let source = library.join("scheduled");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("SKILL.md"), "# scheduled").unwrap();
+        let db = memory_db_with_library(&library);
+        let home = config::get_home_dir().unwrap();
+        let tool_home = tempfile::tempdir_in(&home).unwrap();
+        let selected_root = tool_home.path().join(".selected/skills");
+        let other_root = tool_home.path().join(".other/skills");
+        let selected = test_tool("selected-tool", &selected_root.display().to_string());
+        let other = test_tool("other-tool", &other_root.display().to_string());
+        db.insert_tool_adapter(&selected, 0).unwrap();
+        db.insert_tool_adapter(&other, 0).unwrap();
+        let skill_id = "owner/repo:global-pending";
+        db.save_skill(&test_skill_record(
+            skill_id,
+            "scheduled",
+            SKILL_SCOPE_GLOBAL,
+            None,
+        ))
+        .unwrap();
+
+        SkillService::schedule_skill_globally(&db, skill_id, vec!["selected-tool".to_string()])
+            .unwrap();
+
+        let saved = db.get_skill(skill_id).unwrap().unwrap();
+        assert_eq!(saved.scope, SKILL_SCOPE_GLOBAL);
+        assert!(saved.project_ids.is_empty());
+        assert_eq!(saved.enabled_tools, vec!["selected-tool"]);
+        assert!(selected_root.join("scheduled/SKILL.md").is_file());
         assert!(!other_root.join("scheduled").exists());
     }
 

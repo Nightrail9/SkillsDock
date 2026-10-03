@@ -15,6 +15,7 @@ export interface SequentialBulkActionResult<T> {
 export async function runSequentialBulkAction<T>(
   items: readonly T[],
   action: (item: T) => Promise<unknown>,
+  onItemSettled?: (item: T, error?: unknown) => void,
 ): Promise<SequentialBulkActionResult<T>> {
   const succeeded: T[] = [];
   const failed: Array<SequentialBulkActionFailure<T>> = [];
@@ -23,8 +24,10 @@ export async function runSequentialBulkAction<T>(
     try {
       await action(item);
       succeeded.push(item);
+      onItemSettled?.(item);
     } catch (error) {
       failed.push({ item, error });
+      onItemSettled?.(item, error);
     }
   }
 

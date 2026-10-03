@@ -329,6 +329,31 @@ export async function handleMockInvoke<T>(command: string, args?: Record<string,
       refreshMockProjectSkillCounts();
       return undefined as T;
     }
+    case 'schedule_skill_globally': {
+      const skillId = args?.skillId as string;
+      const toolIds = args?.toolIds as string[];
+      const skill = mockState.skills.find((item) => item.id === skillId);
+      if (!skill) {
+        throw new Error(`Skill not found: ${skillId}`);
+      }
+      if (toolIds.length === 0) {
+        throw new Error('Select at least one AI tool.');
+      }
+      for (const toolId of new Set(toolIds)) {
+        const tool = mockState.tools.find((item) => item.id === toolId);
+        if (!tool || !tool.isEnabled) {
+          throw new Error(`Tool is unavailable: ${toolId}`);
+        }
+      }
+      skill.scope = 'global';
+      skill.projectIds = [];
+      skill.projectNames = [];
+      skill.deployedTools = Object.fromEntries(
+        mockState.tools.map((tool) => [tool.id, toolIds.includes(tool.id)]),
+      );
+      refreshMockProjectSkillCounts();
+      return undefined as T;
+    }
 
 
 

@@ -81,6 +81,7 @@ pub fn run() {
             commands::add_skill_project,
             commands::assign_skill_to_projects,
             commands::schedule_skill_to_projects,
+            commands::schedule_skill_globally,
             commands::scan_project_unmanaged_skills,
             commands::import_project_skills,
             commands::remove_skill_project,

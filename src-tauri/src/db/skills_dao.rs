@@ -281,6 +281,7 @@ impl Database {
     pub fn set_skill_deployment(
         &self,
         id: &str,
+        scope: &str,
         project_ids: &[String],
         primary_project: Option<(&str, &str)>,
         tools: &[String],
@@ -297,9 +298,10 @@ impl Database {
         self.with_write_tx(|tx| {
             let changed = tx
                 .execute(
-                    "UPDATE skills SET scope = 'project', project_id = ?1, project_path = ?2,
-                        enabled_tools = ?3 WHERE id = ?4",
+                    "UPDATE skills SET scope = ?1, project_id = ?2, project_path = ?3,
+                        enabled_tools = ?4 WHERE id = ?5",
                     params![
+                        scope,
                         primary_project.map(|(id, _)| id),
                         primary_project.map(|(_, path)| path),
                         tools_json,

@@ -52,7 +52,7 @@ import { ToolAdaptersView } from './ToolAdaptersView';
 import { ProjectsView } from './ProjectsView';
 
 /** 纯浏览器预览模式下的版本兜底值（Tauri 内一律以 getVersion() 为准） */
-const FALLBACK_APP_VERSION = '0.5.1';
+const FALLBACK_APP_VERSION = '0.5.2';
 
 export type SettingsSubTab = 'general' | 'tools' | 'projects' | 'model' | 'about';
 

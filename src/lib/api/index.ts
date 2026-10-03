@@ -190,6 +190,11 @@ export const projectsApi = {
     return invokeCommand('schedule_skill_to_projects', { skillId, projectIds, toolIds });
   },
 
+  /** Distributes one skill globally and clears any project assignments. */
+  scheduleSkillGlobally(skillId: string, toolIds: ToolId[]): Promise<void> {
+    return invokeCommand('schedule_skill_globally', { skillId, toolIds });
+  },
+
 
   removeProject(id: string, cleanup: boolean): Promise<void> {
     return invokeCommand('remove_skill_project', { id, cleanup });

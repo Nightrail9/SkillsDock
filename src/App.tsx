@@ -142,43 +142,35 @@ export default function App() {
     }
     if (selectedSkillIds.size === 0) return;
     const targetIds = [...selectedSkillIds];
+    const skillsById = new Map(skills.map((skill) => [skill.id, skill]));
     const language = appState?.llmConfig?.language || 'zh';
     setDescBusy(true);
     setGeneratingDescSkillIds((prev) => new Set([...prev, ...targetIds]));
-    try {
-      const result = await settingsApi.processSkillDescriptions(
-        targetIds,
-        apiKey,
-        language,
-      );
-      if (result.failures.length > 0) {
-        if (result.succeeded > 0) {
-          addToast(
-            'warning',
-            `部分简介生成失败 (${result.succeeded}/${result.processed} 成功)`,
-            result.failures.map((f) => f.reason).slice(0, 2).join('; '),
-          );
-        } else {
-          addToast(
-            'error',
-            '简介生成失败',
-            result.failures[0]?.reason || '模型调用未返回有效结果',
-          );
+
+    await Promise.all(
+      targetIds.map(async (id) => {
+        const skill = skillsById.get(id);
+        try {
+          const result = await settingsApi.processSkillDescriptions([id], apiKey, language);
+          const failure = result.failures[0];
+          if (failure) {
+            addToast('error', `「${skill?.displayName ?? id}」简介生成失败`, failure.reason);
+          } else if (result.succeeded > 0) {
+            addToast('success', '简介已生成', `已成功生成「${skill?.displayName ?? id}」的简介`);
+          }
+          await queryClient.invalidateQueries({ queryKey: APP_STATE_KEY });
+        } catch (err) {
+          addToast('error', `「${skill?.displayName ?? id}」简介生成失败`, errorToString(err));
+        } finally {
+          setGeneratingDescSkillIds((prev) => {
+            const next = new Set(prev);
+            next.delete(id);
+            return next;
+          });
         }
-      } else if (result.succeeded > 0) {
-        addToast('success', '简介生成完成', `已成功生成 ${result.succeeded} 个技能的简介！`);
-      }
-      queryClient.invalidateQueries({ queryKey: APP_STATE_KEY });
-    } catch (err) {
-      addToast('error', '简介生成失败', errorToString(err));
-    } finally {
-      setDescBusy(false);
-      setGeneratingDescSkillIds((prev) => {
-        const next = new Set(prev);
-        targetIds.forEach((id) => next.delete(id));
-        return next;
-      });
-    }
+      }),
+    );
+    setDescBusy(false);
   };
   useEffect(() => {
     let cancelled = false;
@@ -369,19 +361,24 @@ export default function App() {
 
   const handleScheduleSkills = useCallback(async ({
     skillIds,
-    projectIds,
+    targetScope,
+    projectId,
     toolIds,
   }: {
     skillIds: string[];
-    projectIds: string[];
+    targetScope: ScopeType;
+    projectId?: string;
     toolIds: ToolId[];
   }): Promise<SkillScheduleSummary> => {
-    const result = await scheduleSkillsMutation.mutateAsync({ skillIds, projectIds, toolIds });
+    const result = await scheduleSkillsMutation.mutateAsync({ skillIds, targetScope, projectId, toolIds });
+    const destination = targetScope === 'global'
+      ? t('全局', 'globally')
+      : t('所选项目', 'the selected project');
     if (result.failed.length === 0) {
       addToast(
         'success',
         t('技能调度完成', 'Skill scheduling complete'),
-        t(`已将 ${result.succeeded.length} 个技能分发到所选项目和工具。`, `Distributed ${result.succeeded.length} skills to the selected projects and tools.`),
+        t(`已将 ${result.succeeded.length} 个技能分发到${destination}和所选工具。`, `Distributed ${result.succeeded.length} skills ${destination} and to the selected tools.`),
       );
     } else {
       addToast(
@@ -533,33 +530,48 @@ export default function App() {
     });
   }, [bulkUpdateMutation.isPending, updatingSkillIds, updateSkillMutation, addToast]);
 
-  // 批量更新（串行），供「全部更新」与「批量更新选中」共用
+  // 批量更新逐项完成后反馈；保留串行写盘以避免并发覆盖工具目录。
   const runBulkUpdate = (ids: string[]) => {
     if (ids.length === 0 || bulkUpdateMutation.isPending) return;
     setUpdatingSkillIds((prev) => new Set([...prev, ...ids]));
-    bulkUpdateMutation.mutate(ids, {
-      onSuccess: (result) => {
-        if (result.failed.length === 0) {
-          addToast('success', '全部更新完成', `已将 ${result.succeeded.length} 个技能更新至最新版本并同步。`);
-        } else {
-          addToast(
-            'warning',
-            '批量更新部分失败',
-            `成功 ${result.succeeded.length} 项、失败 ${result.failed.length} 项：${errorToString(result.failed[0].error)}`
-          );
-        }
+    const skillsById = new Map(skills.map((skill) => [skill.id, skill]));
+    bulkUpdateMutation.mutate(
+      {
+        ids,
+        onItemSettled: (id, error) => {
+          const skill = skillsById.get(id);
+          if (error) {
+            addToast('error', `技能「${skill?.displayName ?? id}」更新失败`, errorToString(error));
+          } else {
+            addToast('success', '技能更新成功', `已更新「${skill?.displayName ?? id}」并同步至已启用工具。`);
+          }
+          setUpdatingSkillIds((prev) => {
+            const next = new Set(prev);
+            next.delete(id);
+            return next;
+          });
+        },
       },
-      onError: (err) => {
-        addToast('error', '批量更新失败', errorToString(err));
+      {
+        onSuccess: (result) => {
+          if (result.failed.length > 0) {
+            addToast(
+              'warning',
+              '批量更新完成',
+              `成功 ${result.succeeded.length} 项、失败 ${result.failed.length} 项。`,
+            );
+          }
+        },
+        onError: (err) => addToast('error', '批量更新失败', errorToString(err)),
+        onSettled: () => {
+          setUpdatingSkillIds((prev) => {
+            const next = new Set(prev);
+            ids.forEach((id) => next.delete(id));
+            return next;
+          });
+        },
       },
-      onSettled: () => {
-        setUpdatingSkillIds((prev) => {
-          const next = new Set(prev);
-          ids.forEach((id) => next.delete(id));
-          return next;
-        });
-      },
-    });
+    );
   };
 
   const handleUpdateAll = () => {

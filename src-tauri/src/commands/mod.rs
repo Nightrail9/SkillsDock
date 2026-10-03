@@ -543,6 +543,16 @@ pub fn schedule_skill_to_projects(
 }
 
 #[tauri::command]
+pub fn schedule_skill_globally(
+    state: State<'_, AppState>,
+    skill_id: String,
+    tool_ids: Vec<String>,
+) -> CmdResult<()> {
+    SkillService::schedule_skill_globally(&state.db, &skill_id, tool_ids)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub fn remove_skill_project(
     state: State<'_, AppState>,
     id: String,

@@ -80,6 +80,8 @@ Every default path can be changed in Settings. You can also add custom tools wit
 
 Register a local project to install skills within that project scope and distribute them to the corresponding project-level directories for each tool. Project skills remain separate from global skills.
 
+The **Pending skills** entry in the library lets you select multiple skills, then distribute them either globally or to one project at a time, with the selected AI tools. Global distribution clears project associations.
+
 ### Chinese and English interface
 
 The interface supports Simplified Chinese and English. You can optionally configure an OpenAI Chat Completions-compatible endpoint to generate concise Chinese descriptions for installed skills. Model configuration is optional and does not affect local skill management.

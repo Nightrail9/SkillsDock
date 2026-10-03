@@ -100,12 +100,28 @@ export function useUpdateSkill() {
   });
 }
 
-/** 批量更新（串行） */
+/** 批量更新（逐项完成后通知调用方；磁盘分发仍保持串行） */
 export function useBulkUpdateSkills() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (ids: string[]) =>
-      runSequentialBulkAction(ids, (id) => skillsApi.updateSkill(id)),
+    mutationFn: ({
+      ids,
+      onItemSettled,
+    }: {
+      ids: string[];
+      onItemSettled?: (id: string, error?: unknown) => void;
+    }) =>
+      runSequentialBulkAction(
+        ids,
+        async (id) => {
+          const updated = await skillsApi.updateSkill(id);
+          queryClient.setQueryData<AppState>(APP_STATE_KEY, (old) =>
+            old ? { ...old, skills: mergeImportedSkills(old.skills, [updated]) } : old,
+          );
+          return updated;
+        },
+        onItemSettled,
+      ),
     onSettled: () => queryClient.invalidateQueries({ queryKey: APP_STATE_KEY }),
   });
 }
