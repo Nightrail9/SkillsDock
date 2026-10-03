@@ -684,10 +684,6 @@ export default function App() {
     if (failed.length === 0) {
       setInstallItems([]);
       setInstallError(null);
-      selectTab('installed');
-      setSearchQuery('');
-      setSelectedScope('all');
-      setSelectedTags([]);
       addToast(
         'success',
         isBatch
@@ -881,7 +877,9 @@ export default function App() {
           <Sidebar
             locale={settings.locale}
             selectedScope={selectedScope}
-            onSelectScope={setSelectedScope}
+            onSelectScope={(scope) =>
+              setSelectedScope((currentScope) => currentScope === scope ? 'all' : scope)
+            }
             projectList={projects.map((p) => ({
               id: p.id,
               name: p.name,

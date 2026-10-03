@@ -68,6 +68,7 @@ export const DiscoveryView: React.FC<DiscoveryViewProps> = ({
 
   // Link Import State
   const [shareLinkInput, setShareLinkInput] = useState('');
+  const [selectedProbedSkillKeys, setSelectedProbedSkillKeys] = useState<Set<string>>(new Set());
   const [parsedLinkSkills, setParsedLinkSkills] = useState<ShareSkillEntry[] | null>(null);
 
   // ===== 真实数据源 hooks =====
@@ -144,6 +145,15 @@ export const DiscoveryView: React.FC<DiscoveryViewProps> = ({
       {
         onSuccess: (probe) => {
           setProbedResult(probe);
+          const uninstalledSkills = probe.skills.filter(
+            (skill) =>
+              !installedRepoDirs.has(
+                `${parsed.owner}/${parsed.name}:${skill.name}`.toLowerCase(),
+              ),
+          );
+          setSelectedProbedSkillKeys(
+            new Set(uninstalledSkills.map((skill) => skill.subpath || skill.name)),
+          );
           // 单技能仓库直接进入安装向导，省一次点击
           if (probe.skills.length === 1) {
             openGitHubInstall(parsed.owner, parsed.name, probe.branch, probe.skills[0]);
@@ -192,12 +202,13 @@ export const DiscoveryView: React.FC<DiscoveryViewProps> = ({
     onSelectInstall(buildGitHubDiscoveryItem(owner, name, branch, skill));
   };
 
-  /** 一键安装 GitHub 探测出的全部未安装技能 */
-  const handleInstallAllProbedSkills = () => {
+  /** 安装 GitHub 探测结果中选中的未安装技能 */
+  const handleInstallSelectedProbedSkills = () => {
     if (!probedResult || !probedRepo || !onBatchInstall) return;
-    const uninstalledItems = probedResult.skills
+    const selectedItems = probedResult.skills
       .filter(
         (skill) =>
+          selectedProbedSkillKeys.has(skill.subpath || skill.name) &&
           !installedRepoDirs.has(
             `${probedRepo.owner}/${probedRepo.name}:${skill.name}`.toLowerCase(),
           ),
@@ -210,11 +221,18 @@ export const DiscoveryView: React.FC<DiscoveryViewProps> = ({
           skill,
         ),
       );
-    if (uninstalledItems.length === 0) {
-      addToast('info', '无需安装', '该仓库中所有技能均已安装。');
-      return;
-    }
-    onBatchInstall(uninstalledItems);
+    if (selectedItems.length === 0) return;
+    onBatchInstall(selectedItems);
+  };
+
+  const handleToggleProbedSkill = (skill: ProbedRepoSkill) => {
+    const key = skill.subpath || skill.name;
+    setSelectedProbedSkillKeys((previous) => {
+      const next = new Set(previous);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
   };
 
   // ===== 分享链接导入：真实解析 =====
@@ -297,6 +315,9 @@ export const DiscoveryView: React.FC<DiscoveryViewProps> = ({
             ),
         )
       : [];
+  const selectedUninstalledProbedCount = uninstalledProbedSkills.filter((skill) =>
+    selectedProbedSkillKeys.has(skill.subpath || skill.name),
+  ).length;
 
   const uninstalledShareSkills = parsedLinkSkills
     ? parsedLinkSkills.filter(
@@ -586,34 +607,63 @@ export const DiscoveryView: React.FC<DiscoveryViewProps> = ({
                         </span>
                       </div>
                       {uninstalledProbedSkills.length > 0 && onBatchInstall && (
-                        <button
-                          type="button"
-                          onClick={handleInstallAllProbedSkills}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white rounded-xl text-xs font-semibold shadow-xs transition-colors shrink-0"
-                        >
-                          <Download className="w-3.5 h-3.5" />
-                          <span>一键安装所有技能 ({uninstalledProbedSkills.length})</span>
-                        </button>
+                        <div className="flex items-center gap-3 shrink-0">
+                          <label className="inline-flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={selectedUninstalledProbedCount === uninstalledProbedSkills.length}
+                              onChange={(event) =>
+                                setSelectedProbedSkillKeys(
+                                  event.target.checked
+                                    ? new Set(uninstalledProbedSkills.map((skill) => skill.subpath || skill.name))
+                                    : new Set(),
+                                )
+                              }
+                              className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                            />
+                            <span>全选</span>
+                          </label>
+                          <button
+                            type="button"
+                            onClick={handleInstallSelectedProbedSkills}
+                            disabled={selectedUninstalledProbedCount === 0}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white rounded-xl text-xs font-semibold shadow-xs transition-colors disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                            <span>安装所选 ({selectedUninstalledProbedCount})</span>
+                          </button>
+                        </div>
                       )}
                     </div>
                     {probedResult.skills.map((skill) => {
                       const alreadyInstalled = installedRepoDirs.has(
                         `${probedRepo.owner}/${probedRepo.name}:${skill.name}`.toLowerCase(),
                       );
+                      const selectionKey = skill.subpath || skill.name;
                       return (
                         <div
-                          key={skill.subpath || skill.name}
+                          key={selectionKey}
                           className="p-3.5 bg-slate-50 rounded-xl border border-slate-200/80 flex items-center justify-between gap-3"
                         >
-                          <div className="min-w-0 flex-1">
-                            <div className="text-xs font-bold text-slate-800 truncate">
-                              {skill.displayName || skill.name}
-                            </div>
-                            <div className="text-[11px] text-slate-500 line-clamp-2">
-                              {skill.description || ''}
-                            </div>
-                            <div className="text-[10px] text-slate-400 font-mono mt-0.5 truncate">
-                              {skill.subpath || '（仓库根目录）'}
+                          <div className="flex items-start gap-3 min-w-0 flex-1">
+                            <input
+                              type="checkbox"
+                              aria-label={`选择技能 ${skill.displayName || skill.name}`}
+                              checked={!alreadyInstalled && selectedProbedSkillKeys.has(selectionKey)}
+                              disabled={alreadyInstalled}
+                              onChange={() => handleToggleProbedSkill(skill)}
+                              className="mt-0.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 disabled:opacity-40"
+                            />
+                            <div className="min-w-0 flex-1">
+                              <div className="text-xs font-bold text-slate-800 truncate">
+                                {skill.displayName || skill.name}
+                              </div>
+                              <div className="text-[11px] text-slate-500 line-clamp-2">
+                                {skill.description || ''}
+                              </div>
+                              <div className="text-[10px] text-slate-400 font-mono mt-0.5 truncate">
+                                {skill.subpath || '（仓库根目录）'}
+                              </div>
                             </div>
                           </div>
                           {alreadyInstalled ? (
