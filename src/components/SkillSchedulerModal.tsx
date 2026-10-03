@@ -32,7 +32,7 @@ export const SkillSchedulerModal: React.FC<SkillSchedulerModalProps> = ({
 }) => {
   const t = (zh: string, en: string) => (locale === 'en' ? en : zh);
   const [selectedSkillIds, setSelectedSkillIds] = useState<Set<string>>(new Set());
-  const [selectedProjectIds, setSelectedProjectIds] = useState<Set<string>>(new Set());
+  const [selectedProjectId, setSelectedProjectId] = useState(projects.find((project) => project.isPathValid)?.id ?? '');
   const [selectedToolIds, setSelectedToolIds] = useState<Set<ToolId>>(
     () => new Set(tools.filter((tool) => tool.isEnabled).map((tool) => tool.id)),
   );
@@ -70,13 +70,8 @@ export const SkillSchedulerModal: React.FC<SkillSchedulerModalProps> = ({
     );
   }, [skills, search, selectedTags]);
   const selectedSkills = skills.filter((skill) => selectedSkillIds.has(skill.id));
-  const deployedProjectCount = selectedSkills.reduce((count, skill) => {
-    return count + new Set([...skill.projectIds, ...selectedProjectIds]).size;
-  }, 0);
-  const plannedDeploymentCount = deployedProjectCount * selectedToolIds.size;
-  const hasGlobalSkills = selectedSkills.some((skill) => skill.scope === 'global');
   const allVisibleSelected = visibleSkills.length > 0 && visibleSkills.every((skill) => selectedSkillIds.has(skill.id));
-  const canSchedule = selectedSkills.length > 0 && selectedProjectIds.size > 0 && selectedToolIds.size > 0 && !isScheduling;
+  const canSchedule = selectedSkills.length > 0 && Boolean(selectedProjectId) && selectedToolIds.size > 0 && !isScheduling;
 
   const toggleSetItem = <T extends string>(current: Set<T>, value: T, setValue: (next: Set<T>) => void) => {
     const next = new Set(current);
@@ -93,7 +88,7 @@ export const SkillSchedulerModal: React.FC<SkillSchedulerModalProps> = ({
     try {
       const result = await onSchedule({
         skillIds: selectedSkills.map((skill) => skill.id),
-        projectIds: [...selectedProjectIds],
+        projectIds: [selectedProjectId],
         toolIds: [...selectedToolIds],
       });
       setSummary(result);
@@ -112,7 +107,7 @@ export const SkillSchedulerModal: React.FC<SkillSchedulerModalProps> = ({
             <div className="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center"><Send className="w-4 h-4" /></div>
             <div>
               <h2 id="skill-scheduler-title" className="text-sm font-bold text-slate-900">{t('调度未分发技能', 'Schedule undistributed skills')}</h2>
-              <p className="text-[11px] text-slate-500">{t('选择技能、项目和工具，一次完成项目分发', 'Choose skills, projects, and tools to distribute in one step')}</p>
+              <p className="text-[11px] text-slate-500">{t('选择技能、一个项目和工具，一次完成项目分发', 'Choose skills, one project, and tools to distribute in one step')}</p>
             </div>
           </div>
           <button type="button" onClick={onClose} disabled={isScheduling} aria-label={t('关闭', 'Close')} className="p-2 rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 disabled:opacity-50"><X className="w-5 h-5" /></button>
@@ -165,7 +160,7 @@ export const SkillSchedulerModal: React.FC<SkillSchedulerModalProps> = ({
                   <span className="min-w-0 flex-1">
                     <span className="flex items-center justify-between gap-2">
                       <span className="font-semibold text-slate-800 truncate">{skill.displayName}</span>
-                      <span className="shrink-0 text-[10px] text-slate-500">{skill.scope === 'global' ? t('全局技能', 'Global') : t(`已关联 ${skill.projectIds.length} 个项目`, `${skill.projectIds.length} assigned projects`)}</span>
+                      {skill.scope === 'project' && <span className="shrink-0 text-[10px] text-slate-500">{t(`已关联 ${skill.projectIds.length} 个项目`, `${skill.projectIds.length} assigned projects`)}</span>}
                     </span>
                     <span className="block text-slate-500 truncate mt-0.5">{skill.description || skill.name}</span>
                     {skill.scope === 'project' && skill.projectNames.length > 0 && (
@@ -179,20 +174,23 @@ export const SkillSchedulerModal: React.FC<SkillSchedulerModalProps> = ({
             </div>
           </section>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="space-y-4">
             <section className="space-y-2">
-              <h3 className="flex items-center gap-1.5 font-semibold text-slate-700"><FolderGit2 className="w-3.5 h-3.5" />{t('目标项目', 'Target projects')}</h3>
+              <h3 className="flex items-center gap-1.5 font-semibold text-slate-700"><FolderGit2 className="w-3.5 h-3.5" />{t('目标项目', 'Target project')}</h3>
               {validProjects.length === 0 ? (
                 <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-amber-800">{t('没有路径有效的项目，请先注册或修复项目目录。', 'No projects with valid paths. Register a project or repair its directory first.')}</p>
               ) : (
-                <div className="max-h-36 overflow-y-auto border border-slate-200 rounded-xl divide-y divide-slate-100">
+                <select
+                  aria-label={t('目标项目', 'Target project')}
+                  value={selectedProjectId}
+                  onChange={(event) => setSelectedProjectId(event.target.value)}
+                  disabled={isScheduling}
+                  className="w-full text-xs p-2 rounded-lg border border-slate-300 bg-white font-medium text-slate-800 focus:ring-2 focus:ring-indigo-500/20 disabled:opacity-50"
+                >
                   {validProjects.map((project) => (
-                    <label key={project.id} className="flex items-center gap-2 p-2.5 hover:bg-slate-50 cursor-pointer">
-                      <input type="checkbox" checked={selectedProjectIds.has(project.id)} disabled={isScheduling} onChange={() => toggleSetItem(selectedProjectIds, project.id, setSelectedProjectIds)} className="accent-indigo-600" />
-                      <span className="truncate text-slate-700">{project.name}</span>
-                    </label>
+                    <option key={project.id} value={project.id}>{project.name} ({project.path})</option>
                   ))}
-                </div>
+                </select>
               )}
               {projects.some((project) => !project.isPathValid) && <p className="text-[10px] text-amber-700">{t('无效路径项目不可选，需先修复项目目录。', 'Projects with invalid paths cannot be selected; repair their directories first.')}</p>}
             </section>
@@ -234,17 +232,6 @@ export const SkillSchedulerModal: React.FC<SkillSchedulerModalProps> = ({
               )}
             </section>
           </div>
-
-          {selectedSkills.length > 0 && (
-            <section className="rounded-xl border border-indigo-200 bg-indigo-50/70 p-3 space-y-2">
-              <h3 className="font-semibold text-indigo-900 flex items-center gap-1.5"><Check className="w-3.5 h-3.5" />{t('分发预览', 'Distribution preview')}</h3>
-              <p className="text-indigo-900/80">{t(`将分发到 ${deployedProjectCount} 个“技能-项目”目标，预计建立 ${plannedDeploymentCount} 个工具分发。`, `This schedules ${deployedProjectCount} skill-project targets and creates ${plannedDeploymentCount} tool distributions.`)}</p>
-              {hasGlobalSkills && <p className="text-amber-800">{t(`${selectedSkills.filter((skill) => skill.scope === 'global').length} 个全局技能将转为项目技能，不再属于全局作用范围。`, `${selectedSkills.filter((skill) => skill.scope === 'global').length} global skills will become project-scoped and stop being global.`)}</p>}
-              {selectedSkills.some((skill) => skill.scope === 'project' && skill.projectIds.length > 0) && <p className="text-indigo-900/80">{t('项目技能启用所选工具后，会分发到它已关联的所有项目，以及本次选择的项目。', 'Selected tools will be distributed to every project already assigned to a project-scoped skill, plus the projects selected here.')}</p>}
-              <p className="text-slate-600">{t('各目标项目使用同一组所选工具：', 'The same selected tools will be used for all target projects: ')}{activeTools.filter((tool) => selectedToolIds.has(tool.id)).map((tool) => tool.name).join(', ') || t('尚未选择', 'None selected')}</p>
-            </section>
-          )}
-
           {submitError && <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-rose-700">{t('调度失败：', 'Scheduling failed: ')}{submitError}</p>}
           {summary && summary.failed.length > 0 && (
             <section role="alert" className="rounded-xl border border-amber-200 bg-amber-50 p-3 space-y-2">
@@ -258,7 +245,7 @@ export const SkillSchedulerModal: React.FC<SkillSchedulerModalProps> = ({
         </div>
 
         <footer className="px-5 py-4 border-t border-slate-200/80 bg-slate-50/70 flex items-center justify-between gap-3 shrink-0">
-          <p className="text-[10px] text-slate-500">{selectedSkills.length} {t('个技能', 'skills')} · {selectedProjectIds.size} {t('个项目', 'projects')} · {selectedToolIds.size} {t('个工具', 'tools')}</p>
+          <p className="text-[10px] text-slate-500">{selectedSkills.length} {t('个技能', 'skills')} · {selectedProjectId ? t('1 个项目', '1 project') : t('未选择项目', 'No project selected')} · {selectedToolIds.size} {t('个工具', 'tools')}</p>
           <div className="flex items-center gap-2">
             <button type="button" onClick={onClose} disabled={isScheduling} className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-200/70 disabled:opacity-50">{t('取消', 'Cancel')}</button>
             <button type="button" onClick={handleSchedule} disabled={!canSchedule} className="px-4 py-2 rounded-xl text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 flex items-center gap-1.5">
