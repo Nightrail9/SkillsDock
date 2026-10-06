@@ -2,7 +2,7 @@
   <img src="./app-icon.png" width="104" alt="SkillDock icon">
   <h1>SkillDock</h1>
   <p><strong>One local skill library, managed once and distributed to every AI coding tool you use.</strong></p>
-  <p><a href="./README.md">简体中文</a> · <a href="./README_EN.md">English</a></p>
+  <p><a href="./README.md">简体中文</a> · <a href="./README_EN.md">English</a> · <a href="https://nightrail9.github.io/SkillsDock/">Website</a></p>
   <p>
     <a href="https://github.com/Nightrail9/SkillsDock/releases/latest"><img src="https://img.shields.io/github/v/release/Nightrail9/SkillsDock?display_name=tag&sort=semver" alt="Latest release"></a>
     <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS-667eea" alt="Supported platforms">
@@ -122,6 +122,16 @@ Share links contain only the repository address and version information required
 > [!WARNING]
 > Uninstalling a skill deletes its files from the central library. Automatic backups are not currently available. Keep uninstall confirmation enabled and back up important local skills yourself.
 
+## Project website
+
+The bilingual static website lives in `website/` and requires no build step. Preview it locally with:
+
+```bash
+npm run website:dev
+```
+
+`.github/workflows/deploy-website.yml` publishes `website/` after pushes to the default branch. To enable the first deployment, set **Settings → Pages → Build and deployment → Source** to **GitHub Actions**.
+
 ## Development
 
 ### Prerequisites
@@ -135,12 +145,6 @@ Share links contain only the repository address and version information required
 ```bash
 npm install
 npm run tauri:dev
-```
-
-To run the browser preview only:
-
-```bash
-npm run dev
 ```
 
 ### Checks and tests

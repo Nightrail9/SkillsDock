@@ -2,7 +2,7 @@
   <img src="./app-icon.png" width="104" alt="SkillDock 图标">
   <h1>SkillDock</h1>
   <p><strong>一个本地技能库，统一管理并按需分发到你的 AI 编程工具。</strong></p>
-  <p><a href="./README.md">简体中文</a> · <a href="./README_EN.md">English</a></p>
+  <p><a href="./README.md">简体中文</a> · <a href="./README_EN.md">English</a> · <a href="https://nightrail9.github.io/SkillsDock/">项目官网</a></p>
   <p>
     <a href="https://github.com/Nightrail9/SkillsDock/releases/latest"><img src="https://img.shields.io/github/v/release/Nightrail9/SkillsDock?display_name=tag&sort=semver" alt="最新版本"></a>
     <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS-667eea" alt="支持平台">
@@ -122,6 +122,18 @@ SkillDock 无需账号，也不依赖云端数据库。
 > [!WARNING]
 > 卸载技能会删除中央库中的对应技能文件，当前没有自动备份。建议保留卸载二次确认，并自行备份重要的本地技能。
 
+## 项目官网
+
+官网地址：[nightrail9.github.io/SkillsDock](https://nightrail9.github.io/SkillsDock/)。源码位于 `website/`，是无需构建的中英文静态页面。
+
+本地预览：
+
+```bash
+npm run website:dev
+```
+
+`.github/workflows/deploy-website.yml` 会在默认分支更新后自动发布官网。首次启用时，请在仓库 **Settings → Pages** 中将 **Build and deployment → Source** 设为 **GitHub Actions**。
+
 ## 参与开发
 
 ### 环境要求
@@ -135,12 +147,6 @@ SkillDock 无需账号，也不依赖云端数据库。
 ```bash
 npm install
 npm run tauri:dev
-```
-
-仅启动浏览器预览：
-
-```bash
-npm run dev
 ```
 
 ### 检查与测试

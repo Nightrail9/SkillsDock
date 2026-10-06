@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --port=3000",
+    "website:dev": "vite website --host 127.0.0.1 --port 4173",
     "build": "tsc --noEmit && vite build",
     "lint": "tsc --noEmit",
     "tauri:dev": "tauri dev",
